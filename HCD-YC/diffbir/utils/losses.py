@@ -105,19 +105,27 @@ class HierarchicalCycleLoss(nn.Module):
         
         # 5. 自适应权重调整 (可选)
         if self.adaptive_weight and hazy_density is not None:
-            # 根据雾气密度动态调整权重
-            # 雾气越重，像素级损失权重越低，特征级和语义级损失权重越高
-            density_factor = torch.sigmoid(10 * (hazy_density - 0.5))  # 将密度映射到[0,1]范围
-            
-            adaptive_pixel_weight = self.pixel_weight * (1 - density_factor * 0.5)
-            adaptive_feature_weight = self.feature_weight * (1 + density_factor * 0.5)
-            adaptive_semantic_weight = self.semantic_weight * (1 + density_factor * 0.5)
+            # 确保hazy_density维度正确，需要是[B,1,1,1]
+            if len(hazy_density.shape) == 4 and hazy_density.shape[1:] == (1, 1, 1):
+                # 计算每个样本的密度因子
+                density_factor = torch.sigmoid(10 * (hazy_density - 0.5))  # 将密度映射到[0,1]范围
+                
+                # 创建标量权重
+                adaptive_pixel_weight = self.pixel_weight * (1 - density_factor.mean() * 0.5)
+                adaptive_feature_weight = self.feature_weight * (1 + density_factor.mean() * 0.5)
+                adaptive_semantic_weight = self.semantic_weight * (1 + density_factor.mean() * 0.5)
+            else:
+                # 如果维度不正确，使用默认权重
+                print(f"Warning: hazy_density shape {hazy_density.shape} is not [B,1,1,1], using default weights")
+                adaptive_pixel_weight = self.pixel_weight
+                adaptive_feature_weight = self.feature_weight
+                adaptive_semantic_weight = self.semantic_weight
         else:
             adaptive_pixel_weight = self.pixel_weight
             adaptive_feature_weight = self.feature_weight
             adaptive_semantic_weight = self.semantic_weight
         
-        # 计算总损失
+        # 计算总损失 - 确保它是标量
         total_loss = (
             adaptive_pixel_weight * pixel_loss +
             adaptive_feature_weight * feature_loss +
@@ -126,6 +134,10 @@ class HierarchicalCycleLoss(nn.Module):
         
         if self.region_aware:
             total_loss += 0.5 * region_loss
+        
+        # 确保total_loss是标量
+        if not torch.is_tensor(total_loss) or total_loss.numel() > 1:
+            total_loss = total_loss.mean()
         
         # 返回总损失和详细损失字典
         loss_dict = {
@@ -190,8 +202,17 @@ class AsymmetricCycleLoss(nn.Module):
         if cycle_hazy is not None:
             backward_loss = F.l1_loss(cycle_hazy, x_hazy)
             loss += self.backward_weight * backward_loss
+            
+            # 确保loss是标量
+            if not torch.is_tensor(loss) or loss.numel() > 1:
+                loss = loss.mean()
+                
             return loss, {'forward_loss': forward_loss.item(), 'backward_loss': backward_loss.item()}
         
+        # 确保loss是标量
+        if not torch.is_tensor(loss) or loss.numel() > 1:
+            loss = loss.mean()
+            
         return loss, {'forward_loss': forward_loss.item()}
 
 
@@ -249,6 +270,10 @@ class TextImageAlignmentLoss(nn.Module):
         
         # 总损失
         total_loss = recon_loss + self.text_weight * text_align_loss
+        
+        # 确保total_loss是标量
+        if not torch.is_tensor(total_loss) or total_loss.numel() > 1:
+            total_loss = total_loss.mean()
         
         loss_dict = {
             'recon_loss': recon_loss.item(),
