@@ -3,9 +3,9 @@ from typing import Tuple, Set, List, Dict
 import torch
 from torch import nn
 
-from .controlnet import ControlledUnetModel, ControlNet
+from .controlnet import ControlledUnetModel, ControlNet, YCbCrControlNet
 from .vae import AutoencoderKL
-from .util import GroupNorm32
+from .util import GroupNorm32, rgb_to_ycbcr
 from .clip import FrozenOpenCLIPEmbedder
 from .distributions import DiagonalGaussianDistribution
 from ..utils.tilevae import VAEHook
@@ -26,7 +26,15 @@ class ControlLDM(nn.Module):
         self.unet = ControlledUnetModel(**unet_cfg)
         self.vae = AutoencoderKL(**vae_cfg)
         self.clip = FrozenOpenCLIPEmbedder(**clip_cfg)
-        self.controlnet = ControlNet(**controlnet_cfg)
+        
+        # 支持YCbCrControlNet配置
+        if "target" in controlnet_cfg and controlnet_cfg["target"] == "diffbir.model.controlnet.YCbCrControlNet":
+            self.controlnet = YCbCrControlNet(**controlnet_cfg["params"])
+            self.use_ycbcr = True
+        else:
+            self.controlnet = ControlNet(**controlnet_cfg)
+            self.use_ycbcr = False
+            
         self.scale_factor = latent_scale_factor
         self.control_scales = [1.0] * 13
 
@@ -63,7 +71,12 @@ class ControlLDM(nn.Module):
 
     @torch.no_grad()
     def load_controlnet_from_ckpt(self, sd: Dict[str, torch.Tensor]) -> None:
-        self.controlnet.load_state_dict(sd, strict=True)
+        # 处理YCbCrControlNet加载checkpoint的情况
+        if self.use_ycbcr:
+            # 尝试仅加载兼容的层
+            self.controlnet.load_state_dict(sd, strict=False)
+        else:
+            self.controlnet.load_state_dict(sd, strict=True)
 
     @torch.no_grad()
     def load_controlnet_from_unet(self) -> Tuple[Set[str]]:
@@ -86,7 +99,13 @@ class ControlLDM(nn.Module):
             else:
                 init_sd[key] = scratch_sd[key].clone()
                 init_with_scratch.add(key)
-        self.controlnet.load_state_dict(init_sd, strict=True)
+        
+        # 放宽加载要求以支持YCbCrControlNet的新增层
+        if self.use_ycbcr:
+            self.controlnet.load_state_dict(init_sd, strict=False)
+        else:
+            self.controlnet.load_state_dict(init_sd, strict=True)
+            
         return init_with_new_zero, init_with_scratch
 
     def vae_encode(
@@ -191,13 +210,25 @@ class ControlLDM(nn.Module):
         ]:
             module.type(dtype)
         # convert controlnet blocks and zero-convs to dtype
-        for module in [
-            self.controlnet.input_blocks,
-            self.controlnet.zero_convs,
-            self.controlnet.middle_block,
-            self.controlnet.middle_block_out,
-        ]:
-            module.type(dtype)
+        if self.use_ycbcr:
+            for module in [
+                self.controlnet.input_blocks,
+                self.controlnet.zero_convs,
+                self.controlnet.middle_block,
+                self.controlnet.middle_block_out,
+                self.controlnet.ycbcr_input_blocks,
+                self.controlnet.ycbcr_middle_block,
+                self.controlnet.feature_fusions,
+            ]:
+                module.type(dtype)
+        else:
+            for module in [
+                self.controlnet.input_blocks,
+                self.controlnet.zero_convs,
+                self.controlnet.middle_block,
+                self.controlnet.middle_block_out,
+            ]:
+                module.type(dtype)
 
         def cast_groupnorm_32(m):
             if isinstance(m, GroupNorm32):
@@ -210,10 +241,24 @@ class ControlLDM(nn.Module):
             self.unet.output_blocks,
         ]:
             module.apply(cast_groupnorm_32)
-        for module in [
-            self.controlnet.input_blocks,
-            self.controlnet.zero_convs,
-            self.controlnet.middle_block,
-            self.controlnet.middle_block_out,
-        ]:
-            module.apply(cast_groupnorm_32)
+        
+        if self.use_ycbcr:
+            for module in [
+                self.controlnet.input_blocks,
+                self.controlnet.zero_convs,
+                self.controlnet.middle_block,
+                self.controlnet.middle_block_out,
+                self.controlnet.ycbcr_input_blocks,
+                self.controlnet.ycbcr_middle_block,
+            ]:
+                module.apply(cast_groupnorm_32)
+        else:
+            for module in [
+                self.controlnet.input_blocks,
+                self.controlnet.zero_convs,
+                self.controlnet.middle_block,
+                self.controlnet.middle_block_out,
+            ]:
+                module.apply(cast_groupnorm_32)
+                
+        return self

@@ -13,6 +13,7 @@ from diffbir.sampler import SpacedSampler
 from diffbir.model import ControlLDM, Diffusion
 from diffbir.pipeline import pad_to_multiples_of
 from diffbir.utils.common import instantiate_from_config
+from diffbir.utils.text_guidance import TextPromptPool, FogAnalyzer, TextCondProcessor
 from torchvision.transforms import ToTensor, Resize, InterpolationMode
 
 
@@ -21,6 +22,11 @@ def main(args) -> None:
     device = torch.device("cuda:0")
     cfg = OmegaConf.load(args.config)
     os.makedirs(cfg.inference.result_folder, exist_ok=True)
+
+    # 初始化文本引导相关组件
+    prompt_pool = TextPromptPool()
+    fog_analyzer = FogAnalyzer(device=device)
+    text_processor = TextCondProcessor(embed_dim=1024).to(device)
 
     # Create model:
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
@@ -64,11 +70,23 @@ def main(args) -> None:
         _, _, h_, w_ = image.shape
 
         image = pad_to_multiples_of(image, multiple=64).to(device)
+        
+        # 使用雾气分析器生成最优提示词
+        if cfg.inference.get('use_dynamic_prompt', True):
+            optimal_prompt = fog_analyzer.select_optimal_prompt(image, prompt_pool)
+            prompts = [optimal_prompt]
+            print(f"分析图像 {image_name} - 使用提示词: {optimal_prompt}")
+        else:
+            prompts = ['remove dense fog']
 
         cond = cldm.prepare_condition(
             image,
-            ['remove dense fog', ],
+            prompts,
         )
+        
+        # 使用文本条件优化处理
+        if cfg.inference.get('use_text_processor', True):
+            cond['c_crossattn'] = text_processor(cond['c_crossattn'])
 
         z = sampler.sample(
             model=cldm,

@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import cv2
 import glob

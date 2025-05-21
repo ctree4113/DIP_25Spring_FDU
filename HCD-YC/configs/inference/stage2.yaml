@@ -51,6 +51,8 @@ model:
           layers: 24
         layer: "penultimate"
       controlnet_cfg:
+        target: diffbir.model.controlnet.YCbCrControlNet
+        params:
         use_checkpoint: True
         image_size: 32 # unused
         in_channels: 4
@@ -65,9 +67,10 @@ model:
         transformer_depth: 1
         context_dim: 1024
         legacy: False
+          ycbcr_fusion: True
 
   diffusion:
-    target: diffbir.model.Diffusion
+    target: diffbir.model.gaussian_diffusion.Diffusion
     params:
       linear_start: 0.00085
       linear_end: 0.0120
@@ -79,3 +82,7 @@ inference:
   controlnet_path: 'weights/stage2.pt'
   image_folder: 'inputs/'
   result_folder: 'outputs/'
+  
+  # 文本引导设置
+  use_dynamic_prompt: True  # 是否使用动态文本提示
+  use_text_processor: True  # 是否使用文本条件优化处理

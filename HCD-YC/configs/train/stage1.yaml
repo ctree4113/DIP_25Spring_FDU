@@ -51,20 +51,23 @@ model:
           layers: 24
         layer: "penultimate"
       controlnet_cfg:
-        use_checkpoint: True
-        image_size: 32 # unused
-        in_channels: 4
-        hint_channels: 4
-        model_channels: 320
-        attention_resolutions: [ 4, 2, 1 ]
-        num_res_blocks: 2
-        channel_mult: [ 1, 2, 4, 4 ]
-        num_head_channels: 64 # need to fix for flash-attn
-        use_spatial_transformer: True
-        use_linear_in_transformer: True
-        transformer_depth: 1
-        context_dim: 1024
-        legacy: False
+        target: diffbir.model.controlnet.YCbCrControlNet
+        params:
+          use_checkpoint: True
+          image_size: 32 # unused
+          in_channels: 4
+          hint_channels: 4
+          model_channels: 320
+          attention_resolutions: [ 4, 2, 1 ]
+          num_res_blocks: 2
+          channel_mult: [ 1, 2, 4, 4 ]
+          num_head_channels: 64 # need to fix for flash-attn
+          use_spatial_transformer: True
+          use_linear_in_transformer: True
+          transformer_depth: 1
+          context_dim: 1024
+          legacy: False
+          ycbcr_fusion: True
 
   diffusion:
     target: diffbir.model.gaussian_diffusion.Diffusion
@@ -77,9 +80,9 @@ dataset:
   train:
     target: datasets.HybridTrainingData
     params:
-      syn_folder: # please fill in. It should contain rgb_500/ and depth_500/ two subdirectories (obtained from RIDCP)
-      real_folder: # please fill in. It should contain real-world hazy images (jpgs, obtained from the URHI split of the RESIDE dataset)
-      crop_size: 512
+      syn_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/RIDCP/"
+      real_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/URHI/"
+      crop_size: 256
       p: 0.3
 
 
@@ -87,12 +90,29 @@ train:
   # pretrained sd path
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
   # experiment directory path
-  exp_dir: './experiment/stage1/'
-  learning_rate: 1e-5
-  batch_size: 16
+  exp_dir: './experiment/stage1_ycbcr_hcycle/'
+  learning_rate: 5e-5
+  batch_size: 18
   num_workers: 16
-  train_steps: 5000
+  train_steps: 2000
   log_every: 100
-  ckpt_every: 1000
-  image_every: 1000
+  ckpt_every: 500
+  image_every: 500
   resume: ~
+  
+  # 层级循环一致性设置
+  cycle_start_step: 500  # 开始应用循环一致性损失的步数
+  cycle_max_step: 2000   # 循环损失权重达到最大值的步数
+  cycle_weight: 0.5      # 层级循环一致性损失的权重
+  asym_weight: 0.3       # 非对称循环损失的权重
+  
+  # 层级损失权重
+  pixel_weight: 1.0      # 像素级损失权重
+  feature_weight: 1.0    # 特征级损失权重
+  semantic_weight: 0.5   # 语义级损失权重
+  region_aware: True     # 是否使用区域感知循环一致性
+  adaptive_weight: True  # 是否使用自适应权重
+  
+  # 循环一致性方向权重
+  forward_weight: 0.7    # 前向循环权重(清晰->雾气->清晰)
+  backward_weight: 0.3   # 反向循环权重(雾气->清晰->雾气)

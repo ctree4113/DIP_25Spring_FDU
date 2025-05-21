@@ -51,20 +51,23 @@ model:
           layers: 24
         layer: "penultimate"
       controlnet_cfg:
-        use_checkpoint: True
-        image_size: 32 # unused
-        in_channels: 4
-        hint_channels: 4
-        model_channels: 320
-        attention_resolutions: [ 4, 2, 1 ]
-        num_res_blocks: 2
-        channel_mult: [ 1, 2, 4, 4 ]
-        num_head_channels: 64 # need to fix for flash-attn
-        use_spatial_transformer: True
-        use_linear_in_transformer: True
-        transformer_depth: 1
-        context_dim: 1024
-        legacy: False
+        target: diffbir.model.controlnet.YCbCrControlNet
+        params:
+          use_checkpoint: True
+          image_size: 32 # unused
+          in_channels: 4
+          hint_channels: 4
+          model_channels: 320
+          attention_resolutions: [ 4, 2, 1 ]
+          num_res_blocks: 2
+          channel_mult: [ 1, 2, 4, 4 ]
+          num_head_channels: 64 # need to fix for flash-attn
+          use_spatial_transformer: True
+          use_linear_in_transformer: True
+          transformer_depth: 1
+          context_dim: 1024
+          legacy: False
+          ycbcr_fusion: True
 
   diffusion:
     target: diffbir.model.gaussian_diffusion.Diffusion
@@ -79,21 +82,49 @@ dataset:
     params:
       # please fill in. These two folders contain corresponding hazy and clean image pairs. The current logic is that the hazy images are named name_index.png,
       # and the corresponding clean image is named name.jpg (since you may want to generate multiple hazy images for one clean image). But you can easily change this in datasets.py.
-      hazy_folder:
-      clean_folder:
-      crop_size: 512
+      hazy_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/Generated_Hazy"
+      clean_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/clear"
+      crop_size: 384
 
 train:
   # pretrained sd path
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
   # experiment directory path
-  exp_dir: './experiment/stage2/'
+  exp_dir: './experiment/stage2_ycbcr_hcycle/'
   # 3e-5 for 50k steps, 1e-5 for 50k steps
-  learning_rate: 3e-5
-  batch_size: 16
+  learning_rate: 5e-5
+  batch_size: 63
   num_workers: 16
-  train_steps: 50000
+  train_steps: 20000
   log_every: 100
-  ckpt_every: 10000
+  ckpt_every: 5000
   image_every: 1000
   resume: ~
+  
+  # 层级循环一致性设置
+  cycle_start_step: 1000  # 开始应用循环一致性损失的步数
+  cycle_max_step: 3000    # 循环损失权重达到最大值的步数
+  cycle_weight: 1.0       # 层级循环一致性损失的权重
+  asym_weight: 0.5        # 非对称循环损失的权重
+  
+  # 层级损失权重
+  pixel_weight: 1.0       # 像素级损失权重
+  feature_weight: 1.0     # 特征级损失权重
+  semantic_weight: 0.5    # 语义级损失权重
+  region_aware: True      # 是否使用区域感知循环一致性
+  adaptive_weight: True   # 是否使用自适应权重
+  
+  # 循环一致性方向权重
+  forward_weight: 0.7     # 前向循环权重(清晰->雾气->清晰)
+  backward_weight: 0.3    # 反向循环权重(雾气->清晰->雾气)
+  
+  # 是否使用反向循环
+  use_backward_cycle: False  # 阶段二不实现反向循环，因为需要Stage1模型
+  
+  # 文本引导优化设置
+  use_dynamic_prompt: True   # 是否使用动态提示词选择
+  dynamic_prompt_start: 2000  # 开始使用动态提示词的步数
+  use_text_processor: True   # 是否使用文本条件优化处理
+  text_processor_start: 2000  # 开始使用文本条件优化处理的步数
+  text_align_weight: 0.3     # 文本-图像对齐损失权重
+  text_align_max_step: 3000  # 文本对齐损失权重达到最大值的步数

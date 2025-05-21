@@ -223,3 +223,56 @@ def avg_pool_nd(dims, *args, **kwargs):
     elif dims == 3:
         return nn.AvgPool3d(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
+
+
+def rgb_to_ycbcr(x):
+    """
+    将RGB图像转换为YCbCr色彩空间
+    Args:
+        x: [B, 3, H, W] RGB图像，值范围为[0, 1]
+    Returns:
+        YCbCr图像，值范围为[0, 1]
+    """
+    if not exists(x):
+        return None
+    
+    # 确保输入在正确范围内
+    device = x.device
+    dtype = x.dtype
+    
+    # RGB到YCbCr的标准转换矩阵
+    r, g, b = torch.split(x, 1, dim=1)
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cb = -0.1687 * r - 0.3313 * g + 0.5 * b + 0.5
+    cr = 0.5 * r - 0.4187 * g - 0.0813 * b + 0.5
+    
+    return torch.cat([y, cb, cr], dim=1)
+
+def ycbcr_to_rgb(x):
+    """
+    将YCbCr图像转换回RGB色彩空间
+    Args:
+        x: [B, 3, H, W] YCbCr图像，值范围为[0, 1]
+    Returns:
+        RGB图像，值范围为[0, 1]
+    """
+    if not exists(x):
+        return None
+    
+    device = x.device
+    dtype = x.dtype
+    
+    # YCbCr到RGB的标准转换矩阵
+    y, cb, cr = torch.split(x, 1, dim=1)
+    cb = cb - 0.5
+    cr = cr - 0.5
+    
+    r = y + 1.402 * cr
+    g = y - 0.34414 * cb - 0.71414 * cr
+    b = y + 1.772 * cb
+    
+    # 确保RGB值在[0, 1]范围内
+    rgb = torch.cat([r, g, b], dim=1)
+    rgb = torch.clamp(rgb, 0.0, 1.0)
+    
+    return rgb

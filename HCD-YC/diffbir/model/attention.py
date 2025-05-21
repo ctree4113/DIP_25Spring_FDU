@@ -54,16 +54,14 @@ def Normalize(in_channels):
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
-        print(
-            f"Setting up {self.__class__.__name__} (vanilla). Query dim is {query_dim}, context_dim is {context_dim} and using "
-            f"{heads} heads."
-        )
-        inner_dim = dim_head * heads
+        # 确保heads和dim_head是有效值
+        self.heads = max(1, heads)
+        self.dim_head = max(32, dim_head)
+        
+        inner_dim = self.dim_head * self.heads
         context_dim = default(context_dim, query_dim)
 
-        self.scale = dim_head**-0.5
-        self.heads = heads
-
+        self.scale = self.dim_head**-0.5
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
@@ -74,27 +72,18 @@ class CrossAttention(nn.Module):
 
     def forward(self, x, context=None, mask=None):
         h = self.heads
+        b, n, d = x.shape
+        if context is None:
+            context = x
+            
+        q, k, v = self.to_q(x), self.to_k(context), self.to_v(context)
 
-        q = self.to_q(x)
-        context = default(context, x)
-        k = self.to_k(context)
-        v = self.to_v(context)
+        q, k, v = map(
+            lambda t: t.reshape(b, t.shape[1], h, self.dim_head).permute(0, 2, 1, 3),
+            (q, k, v),
+        )
 
-        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
-
-        # force cast to fp32 to avoid overflowing
-        if _ATTN_PRECISION == "fp32":
-            # with torch.autocast(enabled=False, device_type = 'cuda'):
-            with torch.autocast(
-                enabled=False,
-                device_type="cuda" if str(x.device).startswith("cuda") else "cpu",
-            ):
-                q, k = q.float(), k.float()
-                sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
-        else:
-            sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
-
-        del q, k
+        sim = einsum("b h i d, b h j d -> b h i j", q, k) * self.scale
 
         if exists(mask):
             mask = rearrange(mask, "b ... -> b (...)")
@@ -105,8 +94,8 @@ class CrossAttention(nn.Module):
         # attention, what we cannot get enough of
         sim = sim.softmax(dim=-1)
 
-        out = einsum("b i j, b j d -> b i d", sim, v)
-        out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
+        out = einsum("b h i j, b h j d -> b h i d", sim, v)
+        out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
 
@@ -114,15 +103,12 @@ class MemoryEfficientCrossAttention(nn.Module):
     # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
-        print(
-            f"Setting up {self.__class__.__name__} (xformers). Query dim is {query_dim}, context_dim is {context_dim} and using "
-            f"{heads} heads."
-        )
-        inner_dim = dim_head * heads
+        # 确保heads和dim_head是有效值
+        self.heads = max(1, heads)
+        self.dim_head = max(32, dim_head)
+        
+        inner_dim = self.dim_head * self.heads
         context_dim = default(context_dim, query_dim)
-
-        self.heads = heads
-        self.dim_head = dim_head
 
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
@@ -140,11 +126,15 @@ class MemoryEfficientCrossAttention(nn.Module):
         v = self.to_v(context)
 
         b, _, _ = q.shape
+        heads = self.heads
+        dim_head = self.dim_head
+        
+        # 更安全的reshape逻辑
         q, k, v = map(
             lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .reshape(b, t.shape[1], heads, dim_head)
             .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .reshape(b * heads, t.shape[1], dim_head)
             .contiguous(),
             (q, k, v),
         )
@@ -158,9 +148,9 @@ class MemoryEfficientCrossAttention(nn.Module):
             raise NotImplementedError
         out = (
             out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .reshape(b, heads, out.shape[1], dim_head)
             .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
+            .reshape(b, out.shape[1], heads * dim_head)
         )
         return self.to_out(out)
 
@@ -168,15 +158,12 @@ class MemoryEfficientCrossAttention(nn.Module):
 class SDPCrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
-        print(
-            f"Setting up {self.__class__.__name__} (sdp). Query dim is {query_dim}, context_dim is {context_dim} and using "
-            f"{heads} heads."
-        )
-        inner_dim = dim_head * heads
+        # 确保heads和dim_head是有效值
+        self.heads = max(1, heads)
+        self.dim_head = max(32, dim_head)
+        
+        inner_dim = self.dim_head * self.heads
         context_dim = default(context_dim, query_dim)
-
-        self.heads = heads
-        self.dim_head = dim_head
 
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
@@ -193,11 +180,15 @@ class SDPCrossAttention(nn.Module):
         v = self.to_v(context)
 
         b, _, _ = q.shape
+        heads = self.heads
+        dim_head = self.dim_head
+        
+        # 更安全的reshape逻辑
         q, k, v = map(
             lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .reshape(b, t.shape[1], heads, dim_head)
             .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .reshape(b * heads, t.shape[1], dim_head)
             .contiguous(),
             (q, k, v),
         )
@@ -209,9 +200,9 @@ class SDPCrossAttention(nn.Module):
             raise NotImplementedError
         out = (
             out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .reshape(b, heads, out.shape[1], dim_head)
             .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
+            .reshape(b, out.shape[1], heads * dim_head)
         )
         return self.to_out(out)
 
@@ -351,3 +342,94 @@ class SpatialTransformer(nn.Module):
         if not self.use_linear:
             x = self.proj_out(x)
         return x + x_in
+
+
+class FeatureAttention(nn.Module):
+    """多特征融合的注意力模块，用于融合RGB和YCbCr特征"""
+    
+    def __init__(self, dim, num_heads=8, head_dim=32):
+        super().__init__()
+        self.dim = dim
+        self.num_heads = max(1, num_heads)  # 确保头数至少为1
+        self.head_dim = max(32, head_dim)   # 确保每个头的维度至少为32
+        self.scale = self.head_dim ** -0.5
+        
+        # RGB和YCbCr特征的注意力投影
+        self.rgb_proj = nn.Linear(dim, self.num_heads * self.head_dim * 3)
+        self.ycbcr_proj = nn.Linear(dim, self.num_heads * self.head_dim * 3)
+        
+        # 输出投影
+        self.out_proj = nn.Linear(self.num_heads * self.head_dim, dim)
+        
+    def forward(self, rgb_feat, ycbcr_feat):
+        """
+        融合RGB和YCbCr特征
+        Args:
+            rgb_feat: [B, C, H, W] RGB特征
+            ycbcr_feat: [B, C, H, W] YCbCr特征
+        Returns:
+            融合后的特征 [B, C, H, W]
+        """
+        # 检查输入形状是否匹配
+        if rgb_feat.shape != ycbcr_feat.shape:
+            # 确保空间维度匹配
+            if rgb_feat.shape[2:] != ycbcr_feat.shape[2:]:
+                # 使用较小的空间尺寸
+                min_h = min(rgb_feat.shape[2], ycbcr_feat.shape[2])
+                min_w = min(rgb_feat.shape[3], ycbcr_feat.shape[3])
+                rgb_feat = rgb_feat[:, :, :min_h, :min_w]
+                ycbcr_feat = ycbcr_feat[:, :, :min_h, :min_w]
+        
+        # 检查通道维度是否匹配预期的self.dim
+        if rgb_feat.shape[1] != self.dim or ycbcr_feat.shape[1] != self.dim:
+            # 调整通道维度，对两个特征使用相同的通道数
+            min_channels = min(min(rgb_feat.shape[1], ycbcr_feat.shape[1]), self.dim)
+            rgb_feat = rgb_feat[:, :min_channels]
+            ycbcr_feat = ycbcr_feat[:, :min_channels]
+            
+            # 如果需要，使用临时层处理调整后的维度
+            if min_channels != self.dim:
+                temp_rgb_proj = nn.Linear(min_channels, self.num_heads * self.head_dim * 3).to(rgb_feat.device)
+                temp_ycbcr_proj = nn.Linear(min_channels, self.num_heads * self.head_dim * 3).to(ycbcr_feat.device)
+                temp_out_proj = nn.Linear(self.num_heads * self.head_dim, min_channels).to(rgb_feat.device)
+            else:
+                temp_rgb_proj = self.rgb_proj
+                temp_ycbcr_proj = self.ycbcr_proj
+                temp_out_proj = self.out_proj
+        else:
+            temp_rgb_proj = self.rgb_proj
+            temp_ycbcr_proj = self.ycbcr_proj
+            temp_out_proj = self.out_proj
+        
+        B, C, H, W = rgb_feat.shape
+        
+        # 重塑特征为序列形式
+        rgb_feat = rgb_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
+        ycbcr_feat = ycbcr_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
+        
+        # 计算QKV
+        rgb_qkv = temp_rgb_proj(rgb_feat).reshape(B, -1, 3, self.num_heads, self.head_dim)
+        rgb_q, rgb_k, rgb_v = rgb_qkv.unbind(dim=2)
+        
+        ycbcr_qkv = temp_ycbcr_proj(ycbcr_feat).reshape(B, -1, 3, self.num_heads, self.head_dim)
+        ycbcr_q, ycbcr_k, ycbcr_v = ycbcr_qkv.unbind(dim=2)
+        
+        # 交叉注意力: RGB_q 与 YCbCr_k
+        attn1 = torch.einsum('bnhd,bmhd->bnmh', rgb_q, ycbcr_k) * self.scale
+        attn1 = attn1.softmax(dim=2)
+        out1 = torch.einsum('bnmh,bmhd->bnhd', attn1, ycbcr_v)
+        
+        # 交叉注意力: YCbCr_q 与 RGB_k
+        attn2 = torch.einsum('bnhd,bmhd->bnmh', ycbcr_q, rgb_k) * self.scale
+        attn2 = attn2.softmax(dim=2)
+        out2 = torch.einsum('bnmh,bmhd->bnhd', attn2, rgb_v)
+        
+        # 融合双向交叉注意力结果
+        out = out1 + out2
+        out = out.reshape(B, -1, self.num_heads * self.head_dim)
+        out = temp_out_proj(out)
+        
+        # 重塑回原始形状
+        out = out.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        return out
