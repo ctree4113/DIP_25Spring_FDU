@@ -92,12 +92,12 @@ train:
   # experiment directory path
   exp_dir: './experiment/stage1_ycbcr_hcycle/'
   learning_rate: 5e-5
-  batch_size: 18
+  batch_size: 32
   num_workers: 16
-  train_steps: 2000
+  train_steps: 5000
   log_every: 100
-  ckpt_every: 500
-  image_every: 500
+  ckpt_every: 1000
+  image_every: 1000
   resume: ~
   
   # 层级循环一致性设置
