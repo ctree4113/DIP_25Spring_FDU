@@ -51,20 +51,23 @@ model:
           layers: 24
         layer: "penultimate"
       controlnet_cfg:
-        use_checkpoint: True
-        image_size: 32 # unused
-        in_channels: 4
-        hint_channels: 4
-        model_channels: 320
-        attention_resolutions: [ 4, 2, 1 ]
-        num_res_blocks: 2
-        channel_mult: [ 1, 2, 4, 4 ]
-        num_head_channels: 64 # need to fix for flash-attn
-        use_spatial_transformer: True
-        use_linear_in_transformer: True
-        transformer_depth: 1
-        context_dim: 1024
-        legacy: False
+        target: diffbir.model.controlnet.YCbCrControlNet
+        params:
+          use_checkpoint: True
+          image_size: 32 # unused
+          in_channels: 4
+          hint_channels: 4
+          model_channels: 320
+          attention_resolutions: [ 4, 2, 1 ]
+          num_res_blocks: 2
+          channel_mult: [ 1, 2, 4, 4 ]
+          num_head_channels: 64 # need to fix for flash-attn
+          use_spatial_transformer: True
+          use_linear_in_transformer: True
+          transformer_depth: 1
+          context_dim: 1024
+          legacy: False
+          ycbcr_fusion: True
 
   diffusion:
     target: diffbir.model.gaussian_diffusion.Diffusion
@@ -76,6 +79,6 @@ model:
 inference:
   w: 0.85
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  controlnet_path: 'weights/stage1.pt'
-  image_folder: 'inputs/'
-  result_folder: 'outputs/'
+  controlnet_path: 'experiment/stage1_ycbcr_hcycle/checkpoints/0005000.pt'
+  image_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/clear/'
+  result_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/Generated_Hazy/'
