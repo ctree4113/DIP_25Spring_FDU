@@ -226,10 +226,13 @@ def main(args) -> None:
                 asym_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('asym_weight', 0.5)
                 
                 # 总损失
+                # 确保每个损失都是标量
+                if not torch.is_tensor(asymmetric_loss) or asymmetric_loss.numel() > 1:
+                    asymmetric_loss = asymmetric_loss.mean()
                 loss = diffusion_loss + cycle_weight * cycle_consistency_loss + asym_weight * asymmetric_loss
                 
                 # 记录循环损失
-                cycle_loss_log.append(cycle_consistency_loss.item())
+                cycle_loss_log.append(cycle_consistency_loss.mean().item())
             else:
                 loss = diffusion_loss
             
