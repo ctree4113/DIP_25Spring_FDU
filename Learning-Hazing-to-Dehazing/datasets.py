@@ -59,7 +59,9 @@ class StaticPairedData(data.Dataset):
 
     def __getitem__(self, index):
         hazy_name = self.hazy_names[index]
-        base_name = hazy_name.split('_')[0]
+        
+        # 获取不带扩展名的文件名
+        base_name = os.path.splitext(hazy_name)[0]
         
         # 尝试不同的扩展名查找清晰图像
         clean_path = None
@@ -69,8 +71,17 @@ class StaticPairedData(data.Dataset):
                 clean_path = possible_path
                 break
         
+        # 如果没找到，再尝试去掉可能存在的编号后缀 (如 1234_1.png -> 1234.jpg)
+        if clean_path is None and '_' in base_name:
+            base_name = base_name.split('_')[0]
+            for ext in ['.jpg', '.jpeg', '.png']:
+                possible_path = os.path.join(self.clean_folder, base_name + ext)
+                if os.path.exists(possible_path):
+                    clean_path = possible_path
+                    break
+        
         if clean_path is None:
-            # 如果找不到对应的清晰图像，默认使用jpg
+            # 如果还是找不到，作为最后尝试，默认使用jpg扩展名
             clean_path = os.path.join(self.clean_folder, base_name + '.jpg')
         
         clean = cv2.imread(clean_path)
