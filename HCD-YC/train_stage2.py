@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1, 2, 3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2, 3'
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
 import torch
@@ -147,28 +147,10 @@ def main(args) -> None:
                 z_0 = pure_cldm.vae_encode(clean)
                 cond = pure_cldm.prepare_condition(hazy, prompt)
                 
-                # 如果启用文本条件优化处理和文本-图像对齐损失
+                # 如果启用文本条件优化处理
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
                     # 处理文本条件嵌入
                     cond['c_crossattn'] = text_processor(cond['c_crossattn'])
-                    
-                    # 如果存在dehazed_imgs，计算文本-图像对齐损失
-                    if global_step > cfg.train.get('cycle_start_step', 500) and 'dehazed_imgs' in locals():
-                        text_alignment_loss, text_loss_details = text_align_loss(
-                            dehazed_imgs,
-                            clean_norm, 
-                            cond['c_crossattn']
-                        )
-                        
-                        # 权重递增，在训练过程中逐渐增加文本对齐损失的权重
-                        text_align_weight = min(1.0, global_step / cfg.train.get('text_align_max_step', 3000)) * cfg.train.get('text_align_weight', 0.3)
-                        
-                        # 添加到总损失中
-                        loss = loss + text_align_weight * text_alignment_loss
-                        
-                        # 记录损失
-                        if accelerator.is_main_process:
-                            writer.add_scalar("loss/text_align_loss", text_loss_details['text_align_loss'], global_step)
                 
                 cond['c_img'] = cond['c_img'].contiguous().float()
 
@@ -210,16 +192,16 @@ def main(args) -> None:
                 
                 # 计算层级循环一致性损失
                 clean_norm = (clean + 1) / 2  # 转换到[0,1]范围
-                hazy_norm = (hazy + 1) / 2
+                hazy_norm_cycle = (hazy + 1) / 2
                 cycle_consistency_loss, loss_details = hier_cycle_loss(
                     clean=clean_norm, 
-                    hazy=hazy_norm, 
+                    hazy=hazy_norm_cycle, 
                     dehazed=dehazed_imgs,
                     hazy_density=hazy_density
                 )
                 
                 # 计算非对称循环损失
-                asymmetric_loss, _ = asym_cycle_loss(clean_norm, hazy_norm, dehazed_imgs)
+                asymmetric_loss, _ = asym_cycle_loss(clean_norm, hazy_norm_cycle, dehazed_imgs)
                 
                 # 权重递增，在训练过程中逐渐增加循环损失的权重
                 cycle_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('cycle_weight', 1.0)
@@ -230,6 +212,24 @@ def main(args) -> None:
                 if not torch.is_tensor(asymmetric_loss) or asymmetric_loss.numel() > 1:
                     asymmetric_loss = asymmetric_loss.mean()
                 loss = diffusion_loss + cycle_weight * cycle_consistency_loss + asym_weight * asymmetric_loss
+                
+                # 计算文本-图像对齐损失(如果启用)
+                if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
+                    text_alignment_loss, text_loss_details = text_align_loss(
+                        dehazed_imgs,
+                        clean_norm, 
+                        cond['c_crossattn']
+                    )
+                    
+                    # 权重递增，在训练过程中逐渐增加文本对齐损失的权重
+                    text_align_weight = min(1.0, global_step / cfg.train.get('text_align_max_step', 3000)) * cfg.train.get('text_align_weight', 0.3)
+                    
+                    # 添加到总损失中
+                    loss = loss + text_align_weight * text_alignment_loss
+                    
+                    # 记录损失
+                    if accelerator.is_main_process:
+                        writer.add_scalar("loss/text_align_loss", text_loss_details['text_align_loss'], global_step)
                 
                 # 记录循环损失
                 cycle_loss_log.append(cycle_consistency_loss.mean().item())

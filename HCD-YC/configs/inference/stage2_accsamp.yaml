@@ -88,6 +88,6 @@ inference:
   tau: 0.8
   omega: 0.6
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  controlnet_path: 'weights/stage2.pt'
+  controlnet_path: 'experiment/stage2_ycbcr_hcycle/checkpoints/0040000.pt'
   image_folder: 'inputs/'
   result_folder: 'outputs/'

@@ -93,11 +93,11 @@ train:
   exp_dir: './experiment/stage2_ycbcr_hcycle/'
   # 3e-5 for 50k steps, 1e-5 for 50k steps
   learning_rate: 5e-5
-  batch_size: 63
+  batch_size: 2
   num_workers: 16
-  train_steps: 20000
+  train_steps: 40000
   log_every: 100
-  ckpt_every: 5000
+  ckpt_every: 20000
   image_every: 1000
   resume: ~
   
