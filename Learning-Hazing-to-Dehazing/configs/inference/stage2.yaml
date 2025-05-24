@@ -76,6 +76,6 @@ model:
 
 inference:
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  controlnet_path: 'weights/stage2.pt'
+  controlnet_path: 'experiment/stage2/checkpoints/0020000.pt'
   image_folder: 'inputs/'
   result_folder: 'outputs/'

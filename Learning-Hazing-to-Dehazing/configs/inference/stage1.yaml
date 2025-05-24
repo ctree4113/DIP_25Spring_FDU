@@ -76,6 +76,6 @@ model:
 inference:
   w: 0.85
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  controlnet_path: 'weights/stage1.pt'
-  image_folder: 'inputs/'
-  result_folder: 'outputs/'
+  controlnet_path: 'experiment/stage1/checkpoints/0005000.pt'
+  image_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/clear/'
+  result_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/Generated_Hazy/'

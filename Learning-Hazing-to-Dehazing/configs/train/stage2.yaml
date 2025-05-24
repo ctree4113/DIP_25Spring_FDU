@@ -81,19 +81,20 @@ dataset:
       # and the corresponding clean image is named name.jpg (since you may want to generate multiple hazy images for one clean image). But you can easily change this in datasets.py.
       hazy_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/Generated_Hazy"
       clean_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/clear"
-      crop_size: 512
+      crop_size: 384
 
 train:
   # pretrained sd path
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
   # experiment directory path
   exp_dir: './experiment/stage2/'
-  # 3e-5 for 50k steps, 1e-5 for 50k steps
-  learning_rate: 3e-5
-  batch_size: 16
+  # 提高学习率加速收敛
+  learning_rate: 5e-5
+  batch_size: 64
   num_workers: 16
-  train_steps: 50000
+  train_steps: 20000
   log_every: 100
-  ckpt_every: 10000
+  ckpt_every: 5000
   image_every: 1000
   resume: ~
+  fp16: false
