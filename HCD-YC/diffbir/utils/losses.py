@@ -258,13 +258,21 @@ class TextImageAlignmentLoss(nn.Module):
         
         # 投影到特征空间
         B, C, H, W = dehazed_semantic.shape
-        dehazed_semantic_flat = dehazed_semantic.view(B, C, -1).mean(dim=2)  # [B, C]
-        clean_semantic_flat = clean_semantic.view(B, C, -1).mean(dim=2)  # [B, C]
+        dehazed_semantic_flat = dehazed_semantic.view(B, C, -1).mean(dim=2)  # [B, C] -> [B, 512]
+        clean_semantic_flat = clean_semantic.view(B, C, -1).mean(dim=2)  # [B, C] -> [B, 512]
+        
+        # 简单的解决方案：降低文本嵌入的维度到512，或者只比较低维特征
+        # 这里我们使用简单的线性投影，不需要可训练参数
+        if text_mean.shape[1] != dehazed_semantic_flat.shape[1]:
+            # 使用PCA风格的降维或者简单截断
+            text_projected = text_mean[:, :dehazed_semantic_flat.shape[1]]  # 简单截断到512维
+        else:
+            text_projected = text_mean
         
         # 计算语义与文本的距离差异
         # 我们希望去雾图像的语义与文本的距离接近清晰图像的语义与文本的距离
-        dehazed_text_dist = F.cosine_similarity(dehazed_semantic_flat, text_mean)
-        clean_text_dist = F.cosine_similarity(clean_semantic_flat, text_mean)
+        dehazed_text_dist = F.cosine_similarity(dehazed_semantic_flat, text_projected)
+        clean_text_dist = F.cosine_similarity(clean_semantic_flat, text_projected)
         
         text_align_loss = F.mse_loss(dehazed_text_dist, clean_text_dist)
         
