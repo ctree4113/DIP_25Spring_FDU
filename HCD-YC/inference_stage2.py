@@ -86,7 +86,8 @@ def main(args) -> None:
         
         # 使用文本条件优化处理
         if cfg.inference.get('use_text_processor', True):
-            cond['c_crossattn'] = text_processor(cond['c_crossattn'])
+            cond['c_crossattn'] = text_processor(cond['c_txt'])
+            cond['c_txt'] = cond['c_crossattn']
 
         z = sampler.sample(
             model=cldm,
