@@ -77,6 +77,14 @@ def main(args) -> None:
         backward_weight=cfg.train.get('backward_weight', 0.3)
     ).to(device)
 
+    # 初始化文本提示池和雾气分析器
+    prompt_pool = TextPromptPool()
+    fog_analyzer = FogAnalyzer(device=device)
+    text_processor = TextCondProcessor(embed_dim=1024).to(device)
+    
+    # 初始化文本-图像对齐损失
+    text_align_loss = TextImageAlignmentLoss(device=device).to(device)
+
     # Setup optimizer:
     opt = torch.optim.AdamW(cldm.controlnet.parameters(), lr=cfg.train.learning_rate)
 
@@ -113,14 +121,6 @@ def main(args) -> None:
         writer = SummaryWriter(exp_dir)
         print(f"Training for {max_steps} steps...")
 
-    # 初始化文本提示池和雾气分析器
-    prompt_pool = TextPromptPool()
-    fog_analyzer = FogAnalyzer(device=device)
-    text_processor = TextCondProcessor(embed_dim=1024).to(device)
-    
-    # 初始化文本-图像对齐损失
-    text_align_loss = TextImageAlignmentLoss(device=device).to(device)
-
     while global_step < max_steps:
         pbar = tqdm(
             iterable=None,
@@ -149,8 +149,10 @@ def main(args) -> None:
                 
                 # 如果启用文本条件优化处理
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
-                    # 处理文本条件嵌入
-                    cond['c_crossattn'] = text_processor(cond['c_crossattn'])
+                    # 处理文本条件嵌入 - 修复：使用c_txt而不是c_crossattn
+                    cond['c_crossattn'] = text_processor(cond['c_txt'])
+                    # 保持向后兼容，也将c_txt设置为处理后的值
+                    cond['c_txt'] = cond['c_crossattn']
                 
                 cond['c_img'] = cond['c_img'].contiguous().float()
 
@@ -215,10 +217,12 @@ def main(args) -> None:
                 
                 # 计算文本-图像对齐损失(如果启用)
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
+                    # 使用处理后的文本条件或原始文本条件
+                    text_condition = cond.get('c_crossattn', cond['c_txt'])
                     text_alignment_loss, text_loss_details = text_align_loss(
                         dehazed_imgs,
                         clean_norm, 
-                        cond['c_crossattn']
+                        text_condition
                     )
                     
                     # 权重递增，在训练过程中逐渐增加文本对齐损失的权重
