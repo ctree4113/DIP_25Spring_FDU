@@ -5,23 +5,23 @@ import torchvision.models as models
 
 
 class VGGFeatureExtractor(nn.Module):
-    """VGG网络特征提取器，用于特征级循环一致性"""
+    """VGG network feature extractor, for feature-level cycle consistency"""
     
     def __init__(self, layer_ids=(2, 7, 16, 25, 34), use_input_norm=True):
         super(VGGFeatureExtractor, self).__init__()
         self.layer_ids = layer_ids
         self.use_input_norm = use_input_norm
         
-        # 加载预训练的VGG19模型
+        # load pre-trained VGG19 model
         self.vgg19 = models.vgg19(pretrained=True).features
         
-        # 冻结参数
+        # freeze parameters
         for param in self.vgg19.parameters():
             param.requires_grad = False
         
-        # 设置均值和标准差
+        # set mean and std
         if self.use_input_norm:
-            # VGG预训练时使用的均值和标准差
+            # mean and std used in VGG pre-training
             mean = torch.Tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
             std = torch.Tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
             self.register_buffer('mean', mean)
@@ -29,9 +29,9 @@ class VGGFeatureExtractor(nn.Module):
     
     def forward(self, x):
         """
-        提取VGG特征
+        extract VGG features
         Args:
-            x: 输入图像，范围为[0, 1]
+            x: input image, range [0, 1]
         """
         if self.use_input_norm:
             x = (x - self.mean.to(x.device)) / self.std.to(x.device)
@@ -46,7 +46,7 @@ class VGGFeatureExtractor(nn.Module):
 
 
 class HierarchicalCycleLoss(nn.Module):
-    """层级循环一致性损失"""
+    """hierarchical cycle consistency loss"""
     
     def __init__(self, pixel_weight=1.0, feature_weight=1.0, semantic_weight=1.0, region_aware=True, adaptive_weight=True):
         super(HierarchicalCycleLoss, self).__init__()
@@ -56,25 +56,25 @@ class HierarchicalCycleLoss(nn.Module):
         self.region_aware = region_aware
         self.adaptive_weight = adaptive_weight
         
-        # VGG特征提取器，用于特征级损失
+        # VGG feature extractor, for feature-level loss
         self.feature_extractor = VGGFeatureExtractor()
         
     def forward(self, clean, hazy, dehazed, hazy_density=None):
         """
-        计算层级循环一致性损失
+        calculate hierarchical cycle consistency loss
         Args:
-            clean: 原始清晰图像 [B, C, H, W]
-            hazy: 雾化后的图像 [B, C, H, W]
-            dehazed: 去雾后的图像 [B, C, H, W]
-            hazy_density: 雾气密度 [B, 1, 1, 1]，用于自适应权重调整
+            clean: original clear image [B, C, H, W]
+            hazy: hazy image [B, C, H, W]
+            dehazed: dehazed image [B, C, H, W]
+            hazy_density: hazy density [B, 1, 1, 1], for adaptive weight adjustment
         Returns:
-            total_loss: 总损失
-            loss_dict: 详细损失字典
+            total_loss: total loss
+            loss_dict: detailed loss dictionary
         """
-        # 1. 像素级循环一致性损失 (L1)
+        # pixel-level cycle consistency loss (L1)
         pixel_loss = F.l1_loss(dehazed, clean)
         
-        # 2. 特征级循环一致性损失 (VGG特征)
+        # feature-level cycle consistency loss (VGG features)
         clean_features = self.feature_extractor(clean)
         dehazed_features = self.feature_extractor(dehazed)
         
@@ -83,18 +83,18 @@ class HierarchicalCycleLoss(nn.Module):
             feature_loss += F.mse_loss(df, cf)
         feature_loss /= len(clean_features)
         
-        # 3. 语义级循环一致性损失 (使用高级特征)
-        # 使用VGG最深层特征作为语义表示
+        # semantic-level cycle consistency loss (using high-level features)
+        # use the deepest layer of VGG as semantic representation
         semantic_loss = F.mse_loss(dehazed_features[-1], clean_features[-1])
         
-        # 4. 区域感知的循环一致性 (可选)
+        # region-aware cycle consistency loss (optional)
         region_loss = 0
         if self.region_aware:
-            # 根据梯度信息识别纹理区域
+            # identify texture regions based on gradient information
             clean_grad = gradient_magnitude(clean)
             high_texture_mask = (clean_grad > clean_grad.mean() * 1.5).float()
             
-            # 对高纹理区域使用加权损失
+            # use weighted loss for high-texture regions
             region_pixel_loss = F.l1_loss(
                 dehazed * high_texture_mask, 
                 clean * high_texture_mask,
@@ -103,19 +103,18 @@ class HierarchicalCycleLoss(nn.Module):
             
             region_loss = region_pixel_loss
         
-        # 5. 自适应权重调整 (可选)
+        # adaptive weight adjustment (optional)
         if self.adaptive_weight and hazy_density is not None:
-            # 确保hazy_density维度正确，需要是[B,1,1,1]
+            # ensure hazy_density has correct shape [B,1,1,1]
             if len(hazy_density.shape) == 4 and hazy_density.shape[1:] == (1, 1, 1):
-                # 计算每个样本的密度因子
-                density_factor = torch.sigmoid(10 * (hazy_density - 0.5))  # 将密度映射到[0,1]范围
+                # calculate density factor for each sample
+                density_factor = torch.sigmoid(10 * (hazy_density - 0.5))  # map density to [0,1] range
                 
-                # 创建标量权重
+                # create scalar weights
                 adaptive_pixel_weight = self.pixel_weight * (1 - density_factor.mean() * 0.5)
                 adaptive_feature_weight = self.feature_weight * (1 + density_factor.mean() * 0.5)
                 adaptive_semantic_weight = self.semantic_weight * (1 + density_factor.mean() * 0.5)
             else:
-                # 如果维度不正确，使用默认权重
                 print(f"Warning: hazy_density shape {hazy_density.shape} is not [B,1,1,1], using default weights")
                 adaptive_pixel_weight = self.pixel_weight
                 adaptive_feature_weight = self.feature_weight
@@ -125,7 +124,7 @@ class HierarchicalCycleLoss(nn.Module):
             adaptive_feature_weight = self.feature_weight
             adaptive_semantic_weight = self.semantic_weight
         
-        # 计算总损失 - 确保它是标量
+        # calculate total loss
         total_loss = (
             adaptive_pixel_weight * pixel_loss +
             adaptive_feature_weight * feature_loss +
@@ -135,11 +134,11 @@ class HierarchicalCycleLoss(nn.Module):
         if self.region_aware:
             total_loss += 0.5 * region_loss
         
-        # 确保total_loss是标量
+        # ensure total_loss is a scalar
         if not torch.is_tensor(total_loss) or total_loss.numel() > 1:
             total_loss = total_loss.mean()
         
-        # 返回总损失和详细损失字典
+        # return total loss and detailed loss dictionary
         loss_dict = {
             'pixel_loss': pixel_loss.item(),
             'feature_loss': feature_loss.item(),
@@ -153,63 +152,63 @@ class HierarchicalCycleLoss(nn.Module):
 
 
 def gradient_magnitude(x):
-    """计算图像梯度幅值，用于识别纹理区域"""
+    """calculate gradient magnitude, for texture region identification"""
     sobel_x = torch.Tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]]).view(1, 1, 3, 3).to(x.device)
     sobel_y = torch.Tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]]).view(1, 1, 3, 3).to(x.device)
     
-    # 计算灰度图
-    if x.shape[1] == 3:  # RGB图像
+    # calculate grayscale image
+    if x.shape[1] == 3:  # RGB image
         gray = 0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]
-    else:  # 单通道图像
+    else:  # single channel image
         gray = x
     
-    # 计算x和y方向的梯度
+    # calculate gradient in x and y directions
     pad = nn.ReflectionPad2d(1)
     gray = pad(gray)
     
     grad_x = F.conv2d(gray, sobel_x)
     grad_y = F.conv2d(gray, sobel_y)
     
-    # 计算梯度幅值
+    # calculate gradient magnitude
     grad_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-6)
     
     return grad_magnitude
 
 
 class AsymmetricCycleLoss(nn.Module):
-    """非对称循环学习损失函数，适应雾化-去雾过程的不对称性"""
+    """asymmetric cycle learning loss function, for asymmetric fog-to-clear process"""
     
     def __init__(self, forward_weight=0.7, backward_weight=0.3):
         super(AsymmetricCycleLoss, self).__init__()
-        self.forward_weight = forward_weight  # 清晰->雾气->清晰
-        self.backward_weight = backward_weight  # 雾气->清晰->雾气
+        self.forward_weight = forward_weight    # clear -> hazy -> clear
+        self.backward_weight = backward_weight  # hazy -> clear -> hazy
         
     def forward(self, x_clean, x_hazy, cycle_clean, cycle_hazy=None):
         """
-        计算非对称循环损失
+        calculate asymmetric cycle loss
         Args:
-            x_clean: 原始清晰图像
-            x_hazy: 雾化后的图像
-            cycle_clean: 雾化后再去雾的图像
-            cycle_hazy: 去雾后再雾化的图像 (如果有)
+            x_clean: original clear image
+            x_hazy: hazy image
+            cycle_clean: hazy image after clear -> hazy -> clear
+            cycle_hazy: clear image after hazy -> clear -> hazy
         """
-        # 前向循环一致性 (清晰->雾气->清晰)
+        # forward cycle consistency (clear -> hazy -> clear)
         forward_loss = F.l1_loss(cycle_clean, x_clean)
         
         loss = self.forward_weight * forward_loss
         
-        # 如果提供了cycle_hazy，则计算反向循环一致性
+        # if cycle_hazy is provided, calculate backward cycle consistency
         if cycle_hazy is not None:
             backward_loss = F.l1_loss(cycle_hazy, x_hazy)
             loss += self.backward_weight * backward_loss
             
-            # 确保loss是标量
+            # ensure loss is a scalar
             if not torch.is_tensor(loss) or loss.numel() > 1:
                 loss = loss.mean()
                 
             return loss, {'forward_loss': forward_loss.item(), 'backward_loss': backward_loss.item()}
         
-        # 确保loss是标量
+        # ensure loss is a scalar
         if not torch.is_tensor(loss) or loss.numel() > 1:
             loss = loss.mean()
             
@@ -218,68 +217,65 @@ class AsymmetricCycleLoss(nn.Module):
 
 class TextImageAlignmentLoss(nn.Module):
     """
-    文本-图像对齐损失，用于优化文本提示对去雾过程的引导能力
+    text-image alignment loss, for optimizing the guidance of text prompts on the dehazing process
     """
     
     def __init__(self, device='cuda'):
         super(TextImageAlignmentLoss, self).__init__()
-        # 文本引导损失权重
+        # text guidance loss weight
         self.text_weight = 0.5
         
-        # 基于VGG特征的相似度损失
+        # similarity loss based on VGG features
         self.feature_extractor = VGGFeatureExtractor(layer_ids=(16, 25, 34))
         self.device = device
         
     def forward(self, dehazed_imgs, clean_imgs, text_embeds):
         """
-        计算文本-图像对齐损失
+        calculate text-image alignment loss
         Args:
-            dehazed_imgs: 去雾后的图像 [B, C, H, W]，范围[0, 1]
-            clean_imgs: 干净的参考图像 [B, C, H, W]，范围[0, 1]
-            text_embeds: 文本嵌入 [B, seq_len, dim]
+            dehazed_imgs: dehazed image [B, C, H, W], range [0, 1]
+            clean_imgs: clean reference image [B, C, H, W], range [0, 1]
+            text_embeds: text embedding [B, seq_len, dim]
         Returns:
-            loss: 总损失
-            loss_dict: 损失详情
+            loss: total loss
+            loss_dict: detailed loss dictionary
         """
-        # 1. 图像重建损失 (基础loss)
+        # image reconstruction loss (basic loss)
         recon_loss = F.l1_loss(dehazed_imgs, clean_imgs)
         
-        # 2. 特征对齐损失
+        # feature alignment loss
         dehazed_features = self.feature_extractor(dehazed_imgs)
         clean_features = self.feature_extractor(clean_imgs)
         
-        # 选择最高层特征用于语义匹配
+        # use the highest layer feature for semantic matching
         dehazed_semantic = dehazed_features[-1]
         clean_semantic = clean_features[-1]
         
-        # 3. 文本-图像一致性
-        # 计算文本嵌入的均值表示
+        # text-image consistency
+        # calculate the mean representation of text embedding
         text_mean = torch.mean(text_embeds, dim=1)  # [B, dim]
         
-        # 投影到特征空间
+        # project to feature space
         B, C, H, W = dehazed_semantic.shape
         dehazed_semantic_flat = dehazed_semantic.view(B, C, -1).mean(dim=2)  # [B, C] -> [B, 512]
         clean_semantic_flat = clean_semantic.view(B, C, -1).mean(dim=2)  # [B, C] -> [B, 512]
         
-        # 简单的解决方案：降低文本嵌入的维度到512，或者只比较低维特征
-        # 这里我们使用简单的线性投影，不需要可训练参数
+        # simple solution: reduce the dimension of text embedding to 512, or only compare low-dimensional features
         if text_mean.shape[1] != dehazed_semantic_flat.shape[1]:
-            # 使用PCA风格的降维或者简单截断
-            text_projected = text_mean[:, :dehazed_semantic_flat.shape[1]]  # 简单截断到512维
+            # use PCA-style dimensionality reduction or simple truncation
+            text_projected = text_mean[:, :dehazed_semantic_flat.shape[1]]  # simple truncation to 512 dimensions
         else:
             text_projected = text_mean
         
-        # 计算语义与文本的距离差异
-        # 我们希望去雾图像的语义与文本的距离接近清晰图像的语义与文本的距离
+        # calculate the distance difference between semantic and text, the semantic of dehazed image should be close to the semantic of clean image
         dehazed_text_dist = F.cosine_similarity(dehazed_semantic_flat, text_projected)
         clean_text_dist = F.cosine_similarity(clean_semantic_flat, text_projected)
         
         text_align_loss = F.mse_loss(dehazed_text_dist, clean_text_dist)
         
-        # 总损失
+        # total loss
         total_loss = recon_loss + self.text_weight * text_align_loss
         
-        # 确保total_loss是标量
         if not torch.is_tensor(total_loss) or total_loss.numel() > 1:
             total_loss = total_loss.mean()
         
@@ -288,4 +284,4 @@ class TextImageAlignmentLoss(nn.Module):
             'text_align_loss': text_align_loss.item()
         }
         
-        return total_loss, loss_dict 
+        return total_loss, loss_dict

@@ -166,12 +166,10 @@ class ControlNet(nn.Module):
         ch = model_channels
         ds = 1
         for level, mult in enumerate(channel_mult):
-            # 处理num_res_blocks参数，确保其为列表
+            # ensure num_res_blocks is a list
             if isinstance(num_res_blocks, int):
-                # 如果num_res_blocks是整数，则对所有层使用相同的块数
                 res_blocks = num_res_blocks
             else:
-                # 如果是列表，则使用对应层的块数
                 res_blocks = num_res_blocks[level]
                 
             for _ in range(res_blocks):
@@ -309,9 +307,7 @@ class ControlNet(nn.Module):
         self._feature_size += ch
 
     def make_zero_conv(self, channels):
-        """
-        创建一个零初始化的卷积层
-        """
+        """create a zero-initialized convolution layer"""
         return zero_module(nn.Conv2d(channels, channels, 1, padding=0))
 
     def forward(self, x, hint, timesteps, context, **kwargs):
@@ -333,7 +329,7 @@ class ControlNet(nn.Module):
 
 class YCbCrControlNet(ControlNet):
     """
-    扩展ControlNet以支持YCbCr色彩空间处理
+    extend ControlNet to support YCbCr color space processing
     """
     def __init__(
         self,
@@ -398,11 +394,11 @@ class YCbCrControlNet(ControlNet):
         
         self.ycbcr_fusion = ycbcr_fusion
         
-        # 添加time_embed_dim属性，通常这个值是model_channels的4倍
+        # time_embed_dim, usually this value is 4 * model_channels
         self.time_embed_dim = 4 * model_channels
         
         if ycbcr_fusion:
-            # 定义YCbCr处理分支
+            # YCbCr processing branch
             self.ycbcr_input_blocks = nn.ModuleList(
                 [
                     TimestepEmbedSequential(
@@ -411,18 +407,16 @@ class YCbCrControlNet(ControlNet):
                 ]
             )
             
-            # 复制原始输入块配置
+            # copy original input block configuration
             input_block_chans = [model_channels]
             ch = model_channels
             ds = 1
             
             for level, mult in enumerate(channel_mult):
-                # 处理num_res_blocks参数，确保其为列表
+                # ensure num_res_blocks is a list
                 if isinstance(num_res_blocks, int):
-                    # 如果num_res_blocks是整数，则对所有层使用相同的块数
                     res_blocks = num_res_blocks
                 else:
-                    # 如果是列表，则使用对应层的块数
                     res_blocks = num_res_blocks[level]
                 
                 for _ in range(res_blocks):
@@ -484,7 +478,7 @@ class YCbCrControlNet(ControlNet):
                     input_block_chans.append(ch)
                     ds *= 2
             
-            # 定义YCbCr中间块
+            # YCbCr middle block
             self.ycbcr_middle_block = TimestepEmbedSequential(
                 ResBlock(
                     ch,
@@ -515,49 +509,47 @@ class YCbCrControlNet(ControlNet):
                 ),
             )
             
-            # YCbCr中间块输出
+            # YCbCr middle block output
             self.ycbcr_middle_block_out = zero_module(nn.Conv2d(ch, ch, 1))
             
-            # 定义特征融合模块
+            # feature fusion module
             self.feature_fusions = nn.ModuleList()
             
-            # 定义特征融合的层级索引
-            # 设定在每个分辨率的最后一个块，以及所有下采样后的第一个块进行融合
+            # feature fusion level indices
+            # set fusion at the last block of each resolution, and the first block after each downsampling
             self.fusion_indices = []
             current_idx = 1
             for level, mult in enumerate(channel_mult):
-                # 处理num_res_blocks参数，确保其为列表
+                # ensure num_res_blocks is a list
                 if isinstance(num_res_blocks, int):
-                    # 如果num_res_blocks是整数，则对所有层使用相同的块数
                     res_blocks = num_res_blocks
                 else:
-                    # 如果是列表，则使用对应层的块数
                     res_blocks = num_res_blocks[level]
                 
-                fusion_level_idx = current_idx + res_blocks - 1  # 每个分辨率的最后一个块
+                fusion_level_idx = current_idx + res_blocks - 1  # last block of each resolution
                 self.fusion_indices.append(fusion_level_idx)
                 current_idx = fusion_level_idx + 1
                 
                 if level < len(channel_mult) - 1:
-                    # 下采样后的第一个块
+                    # first block after each downsampling
                     self.fusion_indices.append(current_idx)
                     current_idx += 1
             
-            # 创建特征融合模块
+            # create feature fusion module
             for idx in self.fusion_indices:
                 ch = input_block_chans[idx]
                 self.feature_fusions.append(
                     FeatureAttention(
                         dim=ch,
-                        num_heads=max(1, ch // 64),  # 根据通道数确定注意力头数
+                        num_heads=max(1, ch // 64),  # determine number of attention heads based on channel count
                         head_dim=64
                     )
                 )
             
-            # 中间块特征融合
+            # middle block feature fusion
             self.middle_fusion = FeatureAttention(
                 dim=ch,
-                num_heads=max(1, ch // 64),  # 根据通道数确定注意力头数
+                num_heads=max(1, ch // 64),  # determine number of attention heads based on channel count
                 head_dim=64
             )
 
@@ -565,7 +557,7 @@ class YCbCrControlNet(ControlNet):
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
 
-        # 处理RGB特征
+        # process RGB features
         rgb_hint = hint
         rgb_h = torch.cat([x, rgb_hint], dim=1)
         rgb_hs = []
@@ -573,27 +565,26 @@ class YCbCrControlNet(ControlNet):
         rgb_hs.append(rgb_h)
         
         if self.ycbcr_fusion:
-            # 转换为YCbCr色彩空间并处理
-            # 假设hint的值范围在[-1, 1]，需要转换到[0, 1]
+            # convert to YCbCr color space and process
+            # assume hint's value range is [-1, 1], need to convert to [0, 1]
             hint_norm = (hint + 1) / 2
             
-            # 确保输入通道数为3（RGB）
+            # ensure input channel count is 3 (RGB)
             if hint_norm.shape[1] == 3:
-                ycbcr_hint = rgb_to_ycbcr(hint_norm) * 2 - 1  # 转回[-1, 1]范围
+                ycbcr_hint = rgb_to_ycbcr(hint_norm) * 2 - 1  # convert back to [-1, 1] range
             else:
-                # 如果通道数不是3，直接使用原始hint
                 ycbcr_hint = hint
             
-            # YCbCr特征处理
+            # YCbCr features processing
             ycbcr_h = torch.cat([x, ycbcr_hint], dim=1)
             ycbcr_hs = []
             ycbcr_h = self.ycbcr_input_blocks[0](ycbcr_h, emb, context)
             ycbcr_hs.append(ycbcr_h)
         
-        # 特征融合
+        # feature fusion
         fusions = []
         
-        # 剩余的前向处理
+        # remaining forward processing
         for i in range(1, len(self.input_blocks)):
             rgb_h = self.input_blocks[i](rgb_h, emb, context)
             rgb_hs.append(rgb_h)
@@ -602,20 +593,20 @@ class YCbCrControlNet(ControlNet):
                 ycbcr_h = self.ycbcr_input_blocks[i](ycbcr_h, emb, context)
                 ycbcr_hs.append(ycbcr_h)
                 
-                # 只在相应的层级进行特征融合
+                # only perform feature fusion at the corresponding level
                 if i in self.fusion_indices:
                     fusion_idx = self.fusion_indices.index(i)
                     
-                    # 确保特征维度一致
+                    # ensure feature dimensions match
                     if rgb_h.shape[1] != ycbcr_h.shape[1]:
-                        # 使用小的那个维度
+                        # use smaller dimension
                         min_channels = min(rgb_h.shape[1], ycbcr_h.shape[1])
                         rgb_h_resized = rgb_h[:, :min_channels]
                         ycbcr_h_resized = ycbcr_h[:, :min_channels]
                         
-                        # 使用调整后的特征进行融合
+                        # use adjusted features for fusion
                         feature_fusion = self.feature_fusions[fusion_idx]
-                        # 确保FeatureAttention的dim参数与输入特征维度匹配
+                        # ensure FeatureAttention's dim parameter matches input feature dimension
                         if feature_fusion.dim != min_channels:
                             temp_fusion = FeatureAttention(min_channels, 
                                                          feature_fusion.num_heads, 
@@ -628,22 +619,22 @@ class YCbCrControlNet(ControlNet):
                     
                     fusions.append(fused_h)
                     
-                    # 使用融合特征更新RGB特征流
+                    # use fused features to update RGB feature stream
                     rgb_h = fused_h
         
-        # 中间块处理
+        # middle block processing
         rgb_h = self.middle_block(rgb_h, emb, context)
         
         if self.ycbcr_fusion:
             ycbcr_h = self.ycbcr_middle_block(ycbcr_h, emb, context)
             
-            # 中间特征融合
+            # middle block feature fusion
             if rgb_h.shape[1] != ycbcr_h.shape[1]:
                 min_channels = min(rgb_h.shape[1], ycbcr_h.shape[1])
                 rgb_h_resized = rgb_h[:, :min_channels]
                 ycbcr_h_resized = ycbcr_h[:, :min_channels]
                 
-                # 使用相同维度创建临时融合层
+                # create temporary fusion layer with same dimension
                 if self.middle_fusion.dim != min_channels:
                     temp_fusion = FeatureAttention(min_channels, 
                                                  self.middle_fusion.num_heads, 
@@ -656,19 +647,19 @@ class YCbCrControlNet(ControlNet):
                 
             rgb_h = middle_fused
         
-        # 使用标准ControlNet的输出格式：每个块的zero_conv处理结果
+        # standard ControlNet output format: zero_conv results for each block
         outs = []
         
-        # 处理每个输入块
+        # process each input block
         for i in range(len(self.input_blocks)):
-            # 获取相应的特征并应用zero_conv
+            # get corresponding features and apply zero_conv
             h_i = rgb_hs[i]
             out_i = self.zero_convs[i](h_i)
             outs.append(out_i)
         
-        # 处理中间块
+        # process middle block
         middle_out = self.middle_block_out(rgb_h)
         outs.append(middle_out)
         
-        # 返回控制信号列表
+        # return control signal list
         return outs

@@ -5,7 +5,7 @@ from torch import nn
 
 from .controlnet import ControlledUnetModel, ControlNet, YCbCrControlNet
 from .vae import AutoencoderKL
-from .util import GroupNorm32, rgb_to_ycbcr
+from .util import GroupNorm32
 from .clip import FrozenOpenCLIPEmbedder
 from .distributions import DiagonalGaussianDistribution
 from ..utils.tilevae import VAEHook
@@ -27,7 +27,7 @@ class ControlLDM(nn.Module):
         self.vae = AutoencoderKL(**vae_cfg)
         self.clip = FrozenOpenCLIPEmbedder(**clip_cfg)
         
-        # 支持YCbCrControlNet配置
+        # support YCbCrControlNet configuration
         if "target" in controlnet_cfg and controlnet_cfg["target"] == "diffbir.model.controlnet.YCbCrControlNet":
             self.controlnet = YCbCrControlNet(**controlnet_cfg["params"])
             self.use_ycbcr = True
@@ -71,9 +71,9 @@ class ControlLDM(nn.Module):
 
     @torch.no_grad()
     def load_controlnet_from_ckpt(self, sd: Dict[str, torch.Tensor]) -> None:
-        # 处理YCbCrControlNet加载checkpoint的情况
+        # YCbCrControlNet checkpoint loading
         if self.use_ycbcr:
-            # 尝试仅加载兼容的层
+            # try loading only compatible layers
             self.controlnet.load_state_dict(sd, strict=False)
         else:
             self.controlnet.load_state_dict(sd, strict=True)
@@ -100,7 +100,7 @@ class ControlLDM(nn.Module):
                 init_sd[key] = scratch_sd[key].clone()
                 init_with_scratch.add(key)
         
-        # 放宽加载要求以支持YCbCrControlNet的新增层
+        # relax loading requirements to support YCbCrControlNet's additional layers
         if self.use_ycbcr:
             self.controlnet.load_state_dict(init_sd, strict=False)
         else:

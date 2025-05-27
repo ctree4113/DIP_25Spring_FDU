@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import cv2
 import glob
@@ -23,7 +23,7 @@ def main(args) -> None:
     cfg = OmegaConf.load(args.config)
     os.makedirs(cfg.inference.result_folder, exist_ok=True)
 
-    # 初始化文本引导相关组件
+    # Intialize the text guidance components
     prompt_pool = TextPromptPool()
     fog_analyzer = FogAnalyzer(device=device)
     text_processor = TextCondProcessor(embed_dim=1024).to(device)
@@ -71,11 +71,11 @@ def main(args) -> None:
 
         image = pad_to_multiples_of(image, multiple=64).to(device)
         
-        # 使用雾气分析器生成最优提示词
+        # use fog analyzer to generate the optimal prompt
         if cfg.inference.get('use_dynamic_prompt', True):
             optimal_prompt = fog_analyzer.select_optimal_prompt(image, prompt_pool)
             prompts = [optimal_prompt]
-            print(f"分析图像 {image_name} - 使用提示词: {optimal_prompt}")
+            print(f"analyze image {image_name} - use prompt: {optimal_prompt}")
         else:
             prompts = ['remove dense fog']
 
@@ -84,7 +84,7 @@ def main(args) -> None:
             prompts,
         )
         
-        # 使用文本条件优化处理
+        # use text condition optimization processing
         if cfg.inference.get('use_text_processor', True):
             cond['c_crossattn'] = text_processor(cond['c_txt'])
             cond['c_txt'] = cond['c_crossattn']

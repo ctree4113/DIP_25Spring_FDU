@@ -227,20 +227,20 @@ def avg_pool_nd(dims, *args, **kwargs):
 
 def rgb_to_ycbcr(x):
     """
-    将RGB图像转换为YCbCr色彩空间
+    convert RGB image to YCbCr color space
     Args:
-        x: [B, 3, H, W] RGB图像，值范围为[0, 1]
+        x: [B, 3, H, W] RGB image, value range [0, 1]
     Returns:
-        YCbCr图像，值范围为[0, 1]
+        YCbCr image, value range [0, 1]
     """
     if not exists(x):
         return None
     
-    # 确保输入在正确范围内
+    # ensure input is in correct range
     device = x.device
     dtype = x.dtype
     
-    # RGB到YCbCr的标准转换矩阵
+    # standard RGB to YCbCr conversion matrix
     r, g, b = torch.split(x, 1, dim=1)
     y = 0.299 * r + 0.587 * g + 0.114 * b
     cb = -0.1687 * r - 0.3313 * g + 0.5 * b + 0.5
@@ -250,11 +250,11 @@ def rgb_to_ycbcr(x):
 
 def ycbcr_to_rgb(x):
     """
-    将YCbCr图像转换回RGB色彩空间
+    convert YCbCr image back to RGB color space
     Args:
-        x: [B, 3, H, W] YCbCr图像，值范围为[0, 1]
+        x: [B, 3, H, W] YCbCr image, value range [0, 1]
     Returns:
-        RGB图像，值范围为[0, 1]
+        RGB image, value range [0, 1]
     """
     if not exists(x):
         return None
@@ -262,7 +262,7 @@ def ycbcr_to_rgb(x):
     device = x.device
     dtype = x.dtype
     
-    # YCbCr到RGB的标准转换矩阵
+    # standard YCbCr to RGB conversion matrix
     y, cb, cr = torch.split(x, 1, dim=1)
     cb = cb - 0.5
     cr = cr - 0.5
@@ -271,7 +271,7 @@ def ycbcr_to_rgb(x):
     g = y - 0.34414 * cb - 0.71414 * cr
     b = y + 1.772 * cb
     
-    # 确保RGB值在[0, 1]范围内
+    # ensure RGB values are in [0, 1] range
     rgb = torch.cat([r, g, b], dim=1)
     rgb = torch.clamp(rgb, 0.0, 1.0)
     

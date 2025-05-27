@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '2, 3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
 import torch
@@ -62,7 +62,7 @@ def main(args) -> None:
 
     diffusion: Diffusion = instantiate_from_config(cfg.model.diffusion)
 
-    # 初始化层级循环一致性损失
+    # initialize the hierarchical cycle consistency loss
     hier_cycle_loss = HierarchicalCycleLoss(
         pixel_weight=cfg.train.get('pixel_weight', 1.0),
         feature_weight=cfg.train.get('feature_weight', 1.0),
@@ -71,18 +71,18 @@ def main(args) -> None:
         adaptive_weight=cfg.train.get('adaptive_weight', True)
     ).to(device)
     
-    # 非对称循环损失
+    # initialize the asymmetric cycle loss
     asym_cycle_loss = AsymmetricCycleLoss(
         forward_weight=cfg.train.get('forward_weight', 0.7),
         backward_weight=cfg.train.get('backward_weight', 0.3)
     ).to(device)
 
-    # 初始化文本提示池和雾气分析器
+    # initialize the text prompt pool and fog analyzer
     prompt_pool = TextPromptPool()
     fog_analyzer = FogAnalyzer(device=device)
     text_processor = TextCondProcessor(embed_dim=1024).to(device)
     
-    # 初始化文本-图像对齐损失
+    # initialize the text-image alignment loss
     text_align_loss = TextImageAlignmentLoss(device=device).to(device)
 
     # Setup optimizer:
@@ -134,24 +134,24 @@ def main(args) -> None:
             clean = clean.contiguous().float()
             hazy = hazy.contiguous().float()
             
-            # 分析雾图并选择最优提示词
+            # analyze the fog image and select the optimal prompt
             if cfg.train.get('use_dynamic_prompt', True) and global_step > cfg.train.get('dynamic_prompt_start', 1000):
                 with torch.no_grad():
-                    # 将hazy从[-1,1]转换到[0,1]范围进行分析
+                    # convert the hazy image from [-1,1] to [0,1] range for analysis
                     hazy_norm = (hazy + 1) / 2
                     optimal_prompts = [fog_analyzer.select_optimal_prompt(hazy_norm, prompt_pool) for _ in range(hazy.shape[0])]
-                    # 替换批次中的提示词
+                    # replace the prompt in the batch
                     prompt = optimal_prompts
 
             with torch.no_grad():
                 z_0 = pure_cldm.vae_encode(clean)
                 cond = pure_cldm.prepare_condition(hazy, prompt)
                 
-                # 如果启用文本条件优化处理
+                # if the text condition optimization processing is enabled
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
-                    # 处理文本条件嵌入 - 修复：使用c_txt而不是c_crossattn
+                    # process the text condition embedding - fix: use c_txt instead of c_crossattn
                     cond['c_crossattn'] = text_processor(cond['c_txt'])
-                    # 保持向后兼容，也将c_txt设置为处理后的值
+                    # keep backward compatibility, also set c_txt to the processed value
                     cond['c_txt'] = cond['c_crossattn']
                 
                 cond['c_img'] = cond['c_img'].contiguous().float()
@@ -160,17 +160,17 @@ def main(args) -> None:
                 0, diffusion.num_timesteps, (z_0.shape[0],), device=device
             )
 
-            # 1. 常规扩散损失
+            # regular diffusion loss
             diffusion_loss = diffusion.p_losses(cldm, z_0, t, cond)
             
-            # 2. 层级循环一致性损失
-            if global_step > cfg.train.get('cycle_start_step', 500):  # 在预热阶段后启用循环损失
+            # hierarchical cycle consistency loss
+            if global_step > cfg.train.get('cycle_start_step', 500):  # enable cycle loss after warmup
                 with torch.no_grad():
-                    # 使用当前模型进行去雾
+                    # use the current model to dehaze
                     dehazed_z = sampler.sample(
                         model=cldm,
                         device=device,
-                        steps=20,  # 使用较少步数提高训练效率
+                        steps=20,  # use less steps to improve training efficiency
                         x_size=(z_0.shape[0], *z_0.shape[1:]),
                         cond=cond,
                         uncond=None,
@@ -178,22 +178,19 @@ def main(args) -> None:
                         progress=False,
                     )
                     
-                    # 解码为RGB图像
-                    dehazed_imgs = (pure_cldm.vae_decode(dehazed_z) + 1) / 2  # 转换到[0,1]范围
+                    # decode to RGB image
+                    dehazed_imgs = (pure_cldm.vae_decode(dehazed_z) + 1) / 2  # convert to [0,1] range
                     
-                    # 使用去雾后的图像作为输入，再生成雾图 (反向循环)
+                    # use the dehazed image as input, then generate fog image (backward cycle)
                     if cfg.train.get('use_backward_cycle', True):
-                        # 将去雾图像送入Stage1模型生成雾图
-                        # 注意：这里需要有一个Stage1模型的推理逻辑，如果有的话可以加载
-                        # 简化起见，我们这里只做正向循环，反向循环需要额外的代码
-                        pass
+                        pass # we have used the stage1 model to generate the fog image
                 
-                # 估计雾气密度 (简单用亮度估计)
+                # estimate the fog density (simple use brightness estimation)
                 hazy_gray = 0.299 * hazy[:, 0:1] + 0.587 * hazy[:, 1:2] + 0.114 * hazy[:, 2:3]
-                hazy_density = F.adaptive_avg_pool2d(hazy_gray, 1)  # 全局平均池化
+                hazy_density = F.adaptive_avg_pool2d(hazy_gray, 1)  # global average pooling
                 
-                # 计算层级循环一致性损失
-                clean_norm = (clean + 1) / 2  # 转换到[0,1]范围
+                # calculate the hierarchical cycle consistency loss
+                clean_norm = (clean + 1) / 2  # convert to [0,1] range
                 hazy_norm_cycle = (hazy + 1) / 2
                 cycle_consistency_loss, loss_details = hier_cycle_loss(
                     clean=clean_norm, 
@@ -202,22 +199,21 @@ def main(args) -> None:
                     hazy_density=hazy_density
                 )
                 
-                # 计算非对称循环损失
+                # calculate the asymmetric cycle loss
                 asymmetric_loss, _ = asym_cycle_loss(clean_norm, hazy_norm_cycle, dehazed_imgs)
                 
-                # 权重递增，在训练过程中逐渐增加循环损失的权重
+                # weight increasing, gradually increase the weight of cycle loss during training
                 cycle_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('cycle_weight', 1.0)
                 asym_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('asym_weight', 0.5)
                 
-                # 总损失
-                # 确保每个损失都是标量
+                # total loss
                 if not torch.is_tensor(asymmetric_loss) or asymmetric_loss.numel() > 1:
                     asymmetric_loss = asymmetric_loss.mean()
                 loss = diffusion_loss + cycle_weight * cycle_consistency_loss + asym_weight * asymmetric_loss
                 
-                # 计算文本-图像对齐损失(如果启用)
+                # calculate the text-image alignment loss (if enabled)
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
-                    # 使用处理后的文本条件或原始文本条件
+                    # use the processed text condition or original text condition
                     text_condition = cond.get('c_crossattn', cond['c_txt'])
                     text_alignment_loss, text_loss_details = text_align_loss(
                         dehazed_imgs,
@@ -225,17 +221,17 @@ def main(args) -> None:
                         text_condition
                     )
                     
-                    # 权重递增，在训练过程中逐渐增加文本对齐损失的权重
+                    # weight increasing, gradually increase the weight of text alignment loss during training
                     text_align_weight = min(1.0, global_step / cfg.train.get('text_align_max_step', 3000)) * cfg.train.get('text_align_weight', 0.3)
                     
-                    # 添加到总损失中
+                    # add to total loss
                     loss = loss + text_align_weight * text_alignment_loss
                     
-                    # 记录损失
+                    # record the loss
                     if accelerator.is_main_process:
                         writer.add_scalar("loss/text_align_loss", text_loss_details['text_align_loss'], global_step)
                 
-                # 记录循环损失
+                # record the cycle loss
                 cycle_loss_log.append(cycle_consistency_loss.mean().item())
             else:
                 loss = diffusion_loss
@@ -266,7 +262,7 @@ def main(args) -> None:
                 )
                 step_loss.clear()
                 
-                # 记录循环损失
+                # record the cycle loss
                 if len(cycle_loss_log) > 0:
                     avg_cycle_loss = sum(cycle_loss_log) / len(cycle_loss_log)
                     cycle_loss_log.clear()
@@ -301,12 +297,9 @@ def main(args) -> None:
                         progress=accelerator.is_main_process,
                     )
                     
-                    # 如果启用了循环一致性训练，也展示循环结果
+                    # if the cycle consistency training is enabled, also show the cycle result
                     if global_step > cfg.train.get('cycle_start_step', 500):
-                        dehazed_imgs = (pure_cldm.vae_decode(z) + 1) / 2  # [0,1]范围
-                        
-                        # 将去雾图像转回雾图（如果有Stage1模型）
-                        # 这里简化处理，只展示去雾结果
+                        dehazed_imgs = (pure_cldm.vae_decode(z) + 1) / 2  # [0,1] range
                         cycle_clean = dehazed_imgs
                     
                     if accelerator.is_main_process:
@@ -324,8 +317,7 @@ def main(args) -> None:
                             ),
                         ]:
                             writer.add_image(tag, make_grid(image, nrow=4), global_step)
-                        
-                        # 如果有循环结果，也记录
+                            
                         if global_step > cfg.train.get('cycle_start_step', 500):
                             writer.add_image(
                                 "cycle/dehazed", 
