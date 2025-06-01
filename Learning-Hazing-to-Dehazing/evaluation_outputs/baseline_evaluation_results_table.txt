@@ -1,0 +1,6 @@
+Image Dehazing Method Quantitative Comparison Results
+================================================================================
+
+Method                   BRISQUE       MUSIQ     CLIPIQA        LIQE      MANIQA      QALIGN        FADE
+--------------------------------------------------------------------------------
+Learning_H2D_Stage2     14.8371    64.4703     0.4689     3.1522     0.3829     3.1715     1.9932
