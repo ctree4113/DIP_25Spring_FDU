@@ -21,3 +21,4 @@ gradio==4.43.0
 polars==1.12.0
 torchsde==0.2.6
 bitsandbytes==0.44.1
+pyiqa==0.1.13
