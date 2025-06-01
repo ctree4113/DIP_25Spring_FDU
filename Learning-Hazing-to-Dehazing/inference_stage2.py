@@ -47,14 +47,28 @@ def main(args) -> None:
 
     rescaler = Resize(512, interpolation=InterpolationMode.BICUBIC, antialias=True)
 
+    # Handle both PASCAL VOC format and simple directory format
+    image_folder = cfg.inference.image_folder
+    
+    # Check if it's PASCAL VOC format (has JPEGImages subdirectory)
+    jpeg_images_path = os.path.join(image_folder, 'JPEGImages')
+    if os.path.exists(jpeg_images_path):
+        print(f"Detected PASCAL VOC format dataset, using JPEGImages directory: {jpeg_images_path}")
+        search_folder = jpeg_images_path
+    else:
+        print(f"Using simple directory format: {image_folder}")
+        search_folder = image_folder
+
     image_names = [
         os.path.basename(name)
         for ext in ("*.jpg", "*.jpeg", "*.png")
-        for name in glob.glob(os.path.join(cfg.inference.image_folder, ext))
+        for name in glob.glob(os.path.join(search_folder, ext))
     ]
+    
+    print(f"Found {len(image_names)} images to process")
 
     for image_name in tqdm(image_names):
-        image = cv2.imread(os.path.join(cfg.inference.image_folder, image_name))
+        image = cv2.imread(os.path.join(search_folder, image_name))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = ToTensor()(image).unsqueeze(0)
 
