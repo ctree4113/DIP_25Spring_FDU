@@ -60,10 +60,10 @@ class StaticPairedData(data.Dataset):
     def __getitem__(self, index):
         hazy_name = self.hazy_names[index]
         
-        # 获取不带扩展名的文件名
+        # get file name without extension
         base_name = os.path.splitext(hazy_name)[0]
         
-        # 尝试不同的扩展名查找清晰图像
+        # try different extensions to find clean image
         clean_path = None
         for ext in ['.jpg', '.jpeg', '.png']:
             possible_path = os.path.join(self.clean_folder, base_name + ext)
@@ -71,25 +71,22 @@ class StaticPairedData(data.Dataset):
                 clean_path = possible_path
                 break
         
-        # 如果没找到，再尝试去掉可能存在的编号后缀 (如 1234_1.png -> 1234.jpg)
         if clean_path is None and '_' in base_name:
             base_name = base_name.split('_')[0]
-            for ext in ['.jpg', '.jpeg', '.png']:
-                possible_path = os.path.join(self.clean_folder, base_name + ext)
-                if os.path.exists(possible_path):
-                    clean_path = possible_path
-                    break
+        for ext in ['.jpg', '.jpeg', '.png']:
+            possible_path = os.path.join(self.clean_folder, base_name + ext)
+            if os.path.exists(possible_path):
+                clean_path = possible_path
+                break
         
         if clean_path is None:
-            # 如果还是找不到，作为最后尝试，默认使用jpg扩展名
             clean_path = os.path.join(self.clean_folder, base_name + '.jpg')
         
         clean = cv2.imread(clean_path)
         hazy = cv2.imread(os.path.join(self.hazy_folder, hazy_name))
         
-        # 确保加载成功
+        # ensure loading success
         if clean is None or hazy is None:
-            # 如果加载失败，返回一个空数据，防止程序崩溃
             print(f"Warning: Failed to load images. Clean: {clean_path}, Hazy: {os.path.join(self.hazy_folder, hazy_name)}")
             clean = np.zeros((self.crop_size, self.crop_size, 3), dtype=np.uint8)
             hazy = np.zeros((self.crop_size, self.crop_size, 3), dtype=np.uint8)
@@ -128,7 +125,7 @@ class HybridTrainingData(data.Dataset):
 
     def __getitem__(self, index):
         if np.random.rand(1) < self.p:
-            # 使用真实雾霾图像（无参考清晰图像）
+            # use real hazy image (without reference clean image)
             name = random.choice(self.real_names)
             real_hazy = cv2.imread(os.path.join(self.real_folder, name))
             real_hazy = cv2.cvtColor(real_hazy, cv2.COLOR_BGR2RGB)
@@ -136,7 +133,7 @@ class HybridTrainingData(data.Dataset):
             real_hazy = ToTensor()(random_crop(real_hazy, self.crop_size)) * 2. - 1.
             return real_hazy.clip(-1., 1.), torch.zeros_like(real_hazy, dtype=real_hazy.dtype), "hazy, foggy, misty, obscure, smoggy.", 'uncond'
         else:
-            # 使用合成雾霾图像（有参考清晰图像）
+            # use synthetic hazy image (with reference clean image)
             syn_clean_name = random.choice(self.syn_names)
             syn_clean = cv2.imread(os.path.join(self.syn_folder, 'rgb_500', syn_clean_name)).astype(np.float32) / 255.0
             depth = np.load(os.path.join(self.syn_folder, 'depth_500', syn_clean_name.split('.')[0] + '.npy'))
