@@ -65,9 +65,9 @@ def main(args) -> None:
     # initialize the hierarchical cycle consistency loss
     hier_cycle_loss = HierarchicalCycleLoss(
         pixel_weight=cfg.train.get('pixel_weight', 1.0),
-        feature_weight=cfg.train.get('feature_weight', 1.0),
-        semantic_weight=cfg.train.get('semantic_weight', 0.5),
-        region_aware=cfg.train.get('region_aware', True),
+        feature_weight=cfg.train.get('feature_weight', 0.5),
+        semantic_weight=cfg.train.get('semantic_weight', 0.3),
+        region_weight=cfg.train.get('region_weight', 0.2),
         adaptive_weight=cfg.train.get('adaptive_weight', True)
     ).to(device)
     
@@ -134,25 +134,24 @@ def main(args) -> None:
             clean = clean.contiguous().float()
             hazy = hazy.contiguous().float()
             
-            # analyze the fog image and select the optimal prompt
+            # analyze fog and select optimal prompt
             if cfg.train.get('use_dynamic_prompt', True) and global_step > cfg.train.get('dynamic_prompt_start', 1000):
                 with torch.no_grad():
-                    # convert the hazy image from [-1,1] to [0,1] range for analysis
+                    # convert hazy image to [0,1] range for analysis
                     hazy_norm = (hazy + 1) / 2
-                    optimal_prompts = [fog_analyzer.select_optimal_prompt(hazy_norm, prompt_pool) for _ in range(hazy.shape[0])]
-                    # replace the prompt in the batch
-                    prompt = optimal_prompts
+                    optimal_prompt = fog_analyzer.select_optimal_prompt(hazy_norm, prompt_pool)
+                    # replace prompts for entire batch
+                    prompt = [optimal_prompt] * hazy.shape[0]
 
             with torch.no_grad():
                 z_0 = pure_cldm.vae_encode(clean)
                 cond = pure_cldm.prepare_condition(hazy, prompt)
                 
-                # if the text condition optimization processing is enabled
+                # enhanced text condition processing
                 if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
-                    # process the text condition embedding - fix: use c_txt instead of c_crossattn
-                    cond['c_crossattn'] = text_processor(cond['c_txt'])
-                    # keep backward compatibility, also set c_txt to the processed value
-                    cond['c_txt'] = cond['c_crossattn']
+                    # process text embeddings
+                    enhanced_text = text_processor(cond['c_txt'])
+                    cond['c_txt'] = enhanced_text
                 
                 cond['c_img'] = cond['c_img'].contiguous().float()
 
@@ -160,99 +159,119 @@ def main(args) -> None:
                 0, diffusion.num_timesteps, (z_0.shape[0],), device=device
             )
 
-            # regular diffusion loss
+            # primary diffusion loss
             diffusion_loss = diffusion.p_losses(cldm, z_0, t, cond)
             
+            # progressive training strategy
+            cycle_enabled = global_step > cfg.train.get('cycle_start_step', 500)
+            text_align_enabled = (cfg.train.get('use_text_processor', True) and 
+                                global_step > cfg.train.get('text_processor_start', 1000))
+            
+            total_loss = diffusion_loss
+            
             # hierarchical cycle consistency loss
-            if global_step > cfg.train.get('cycle_start_step', 500):  # enable cycle loss after warmup
+            if cycle_enabled:
                 with torch.no_grad():
-                    # use the current model to dehaze
+                    # efficient dehazing for cycle loss computation
+                    sample_steps = max(10, 50 - global_step // 100)  # decrease steps over time
                     dehazed_z = sampler.sample(
                         model=cldm,
                         device=device,
-                        steps=20,  # use less steps to improve training efficiency
-                        x_size=(z_0.shape[0], *z_0.shape[1:]),
+                        steps=sample_steps,
+                        x_size=z_0.shape,
                         cond=cond,
                         uncond=None,
                         cfg_scale=1.0,
                         progress=False,
                     )
                     
-                    # decode to RGB image
-                    dehazed_imgs = (pure_cldm.vae_decode(dehazed_z) + 1) / 2  # convert to [0,1] range
-                    
-                    # use the dehazed image as input, then generate fog image (backward cycle)
-                    if cfg.train.get('use_backward_cycle', True):
-                        pass # we have used the stage1 model to generate the fog image
+                    # decode to [0,1] range
+                    dehazed_imgs = torch.clamp((pure_cldm.vae_decode(dehazed_z) + 1) / 2, 0, 1)
                 
-                # estimate the fog density (simple use brightness estimation)
-                hazy_gray = 0.299 * hazy[:, 0:1] + 0.587 * hazy[:, 1:2] + 0.114 * hazy[:, 2:3]
-                hazy_density = F.adaptive_avg_pool2d(hazy_gray, 1)  # global average pooling
+                # normalize inputs for loss computation
+                clean_norm = torch.clamp((clean + 1) / 2, 0, 1)
+                hazy_norm = torch.clamp((hazy + 1) / 2, 0, 1)
                 
-                # calculate the hierarchical cycle consistency loss
-                clean_norm = (clean + 1) / 2  # convert to [0,1] range
-                hazy_norm_cycle = (hazy + 1) / 2
-                cycle_consistency_loss, loss_details = hier_cycle_loss(
+                # hierarchical cycle loss
+                cycle_loss, cycle_details = hier_cycle_loss(
                     clean=clean_norm, 
-                    hazy=hazy_norm_cycle, 
-                    dehazed=dehazed_imgs,
-                    hazy_density=hazy_density
+                    hazy=hazy_norm, 
+                    dehazed=dehazed_imgs
                 )
                 
-                # calculate the asymmetric cycle loss
-                asymmetric_loss, _ = asym_cycle_loss(clean_norm, hazy_norm_cycle, dehazed_imgs)
+                # asymmetric cycle loss  
+                asym_loss, asym_details = asym_cycle_loss(
+                    x_clean=clean_norm, 
+                    x_hazy=hazy_norm, 
+                    cycle_clean=dehazed_imgs
+                )
                 
-                # weight increasing, gradually increase the weight of cycle loss during training
-                cycle_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('cycle_weight', 1.0)
-                asym_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('asym_weight', 0.5)
+                # progressive weight scheduling
+                cycle_progress = min(1.0, (global_step - cfg.train.get('cycle_start_step', 500)) / 
+                                   max(1, cfg.train.get('cycle_ramp_steps', 1500)))
                 
-                # total loss
-                if not torch.is_tensor(asymmetric_loss) or asymmetric_loss.numel() > 1:
-                    asymmetric_loss = asymmetric_loss.mean()
-                loss = diffusion_loss + cycle_weight * cycle_consistency_loss + asym_weight * asymmetric_loss
+                cycle_weight = cycle_progress * cfg.train.get('cycle_weight', 0.5)
+                asym_weight = cycle_progress * cfg.train.get('asym_weight', 0.2)
                 
-                # calculate the text-image alignment loss (if enabled)
-                if cfg.train.get('use_text_processor', True) and global_step > cfg.train.get('text_processor_start', 1000):
-                    # use the processed text condition or original text condition
-                    text_condition = cond.get('c_crossattn', cond['c_txt'])
-                    text_alignment_loss, text_loss_details = text_align_loss(
-                        dehazed_imgs,
-                        clean_norm, 
-                        text_condition
-                    )
-                    
-                    # weight increasing, gradually increase the weight of text alignment loss during training
-                    text_align_weight = min(1.0, global_step / cfg.train.get('text_align_max_step', 3000)) * cfg.train.get('text_align_weight', 0.3)
-                    
-                    # add to total loss
-                    loss = loss + text_align_weight * text_alignment_loss
-                    
-                    # record the loss
-                    if accelerator.is_main_process:
-                        writer.add_scalar("loss/text_align_loss", text_loss_details['text_align_loss'], global_step)
+                total_loss = total_loss + cycle_weight * cycle_loss + asym_weight * asym_loss
                 
-                # record the cycle loss
-                cycle_loss_log.append(cycle_consistency_loss.mean().item())
-            else:
-                loss = diffusion_loss
+                # log cycle losses
+                cycle_loss_log.append(cycle_loss.item())
+                
+                # text-image alignment loss
+                if text_align_enabled:
+                    try:
+                        text_alignment_loss, text_details = text_align_loss(
+                            dehazed_imgs=dehazed_imgs,
+                            clean_imgs=clean_norm, 
+                            text_embeds=cond['c_txt']
+                        )
+                        
+                        # progressive text alignment weight
+                        text_progress = min(1.0, (global_step - cfg.train.get('text_processor_start', 1000)) / 
+                                          max(1, cfg.train.get('text_align_ramp_steps', 2000)))
+                        text_weight = text_progress * cfg.train.get('text_align_weight', 0.1)
+                        
+                        total_loss = total_loss + text_weight * text_alignment_loss
+                        
+                        # log text alignment loss  
+                        if accelerator.is_main_process and global_step % cfg.train.log_every == 0:
+                            writer.add_scalar("loss/text_align", text_alignment_loss.item(), global_step)
+                            for key, val in text_details.items():
+                                writer.add_scalar(f"loss/text_{key}", val, global_step)
+                                
+                    except Exception as e:
+                        if accelerator.is_main_process:
+                            print(f"Text alignment loss computation failed at step {global_step}: {e}")
             
+            # optimize
             opt.zero_grad()
-            accelerator.backward(loss)
+            accelerator.backward(total_loss)
+            
+            # gradient clipping for stability
+            if cfg.train.get('grad_clip', None):
+                accelerator.clip_grad_norm_(cldm.parameters(), cfg.train.grad_clip)
+                
             opt.step()
-
             accelerator.wait_for_everyone()
 
             global_step += 1
-            step_loss.append(loss.item())
-            epoch_loss.append(loss.item())
+            step_loss.append(total_loss.item())
+            epoch_loss.append(total_loss.item())
             pbar.update(1)
-            pbar.set_description(
-                f"Epoch: {epoch:04d}, Global Step: {global_step:07d}, Loss: {loss.item():.6f}"
-            )
+            
+            # improved progress display
+            loss_str = f"Loss: {total_loss.item():.4f}"
+            if cycle_enabled:
+                loss_str += f", Cycle: {cycle_loss.item():.4f}"
+            if text_align_enabled:
+                loss_str += f", Text: {text_alignment_loss.item():.4f}"
+                
+            pbar.set_description(f"Epoch: {epoch:04d}, Step: {global_step:07d}, {loss_str}")
 
-            # Log loss values:
+            # enhanced logging
             if global_step % cfg.train.log_every == 0 and global_step > 0:
-                # Gather values from all processes
+                # gather values from all processes
                 avg_loss = (
                     accelerator.gather(
                         torch.tensor(step_loss, device=device).unsqueeze(0)
@@ -262,15 +281,22 @@ def main(args) -> None:
                 )
                 step_loss.clear()
                 
-                # record the cycle loss
+                # cycle loss logging
                 if len(cycle_loss_log) > 0:
                     avg_cycle_loss = sum(cycle_loss_log) / len(cycle_loss_log)
                     cycle_loss_log.clear()
                     if accelerator.is_main_process:
-                        writer.add_scalar("loss/cycle_loss", avg_cycle_loss, global_step)
+                        writer.add_scalar("loss/cycle_consistency", avg_cycle_loss, global_step)
                 
                 if accelerator.is_main_process:
-                    writer.add_scalar("loss/loss_simple_step", avg_loss, global_step)
+                    writer.add_scalar("loss/total_loss", avg_loss, global_step)
+                    writer.add_scalar("loss/diffusion_loss", diffusion_loss.item(), global_step)
+                    
+                    # log training progress weights
+                    if cycle_enabled:
+                        writer.add_scalar("weight/cycle_weight", cycle_weight, global_step)
+                    if text_align_enabled:
+                        writer.add_scalar("weight/text_weight", text_weight, global_step)
 
             # Save checkpoint:
             if global_step % cfg.train.ckpt_every == 0 and global_step > 0:
@@ -338,7 +364,7 @@ def main(args) -> None:
         )
         epoch_loss.clear()
         if accelerator.is_main_process:
-            writer.add_scalar("loss/loss_simple_epoch", avg_epoch_loss, global_step)
+            writer.add_scalar("loss/total_loss_epoch", avg_epoch_loss, global_step)
 
     if accelerator.is_main_process:
         print("done!")

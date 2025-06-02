@@ -350,20 +350,39 @@ class FeatureAttention(nn.Module):
     def __init__(self, dim, num_heads=8, head_dim=32):
         super().__init__()
         self.dim = dim
-        self.num_heads = max(1, num_heads)  # Ensure at least 1 head
-        self.head_dim = max(32, head_dim)   # Ensure each head dimension is at least 32
+        self.num_heads = max(1, num_heads)
+        self.head_dim = max(32, head_dim)
         self.scale = self.head_dim ** -0.5
         
         # RGB and YCbCr feature attention projection
         self.rgb_proj = nn.Linear(dim, self.num_heads * self.head_dim * 3)
         self.ycbcr_proj = nn.Linear(dim, self.num_heads * self.head_dim * 3)
         
-        # output projection
+        # output projection with residual connection
         self.out_proj = nn.Linear(self.num_heads * self.head_dim, dim)
+        self.norm = nn.LayerNorm(dim)
+        
+        # learnable fusion weight for adaptive blending
+        self.fusion_weight = nn.Parameter(torch.tensor(0.5))
+        
+        # initialize weights for stable training
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize attention weights for stable convergence"""
+        # xavier uniform initialization for projection layers
+        nn.init.xavier_uniform_(self.rgb_proj.weight)
+        nn.init.xavier_uniform_(self.ycbcr_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        
+        # zero bias initialization
+        nn.init.zeros_(self.rgb_proj.bias)
+        nn.init.zeros_(self.ycbcr_proj.bias)
+        nn.init.zeros_(self.out_proj.bias)
         
     def forward(self, rgb_feat, ycbcr_feat):
         """
-        Fuse RGB and YCbCr features
+        Enhanced cross-modal feature fusion with improved stability
         Args:
             rgb_feat: [B, C, H, W] RGB feature
             ycbcr_feat: [B, C, H, W] YCbCr feature
@@ -374,62 +393,84 @@ class FeatureAttention(nn.Module):
         if rgb_feat.shape != ycbcr_feat.shape:
             # ensure spatial dimensions match
             if rgb_feat.shape[2:] != ycbcr_feat.shape[2:]:
-                # use smaller spatial dimensions
                 min_h = min(rgb_feat.shape[2], ycbcr_feat.shape[2])
                 min_w = min(rgb_feat.shape[3], ycbcr_feat.shape[3])
                 rgb_feat = rgb_feat[:, :, :min_h, :min_w]
                 ycbcr_feat = ycbcr_feat[:, :, :min_h, :min_w]
         
-        # check if channel dimensions match expected self.dim
+        # handle channel dimension mismatches
         if rgb_feat.shape[1] != self.dim or ycbcr_feat.shape[1] != self.dim:
-            # adjust channel dimensions, use same number of channels for both features
             min_channels = min(min(rgb_feat.shape[1], ycbcr_feat.shape[1]), self.dim)
             rgb_feat = rgb_feat[:, :min_channels]
             ycbcr_feat = ycbcr_feat[:, :min_channels]
             
-            # if needed, use temporary layer to handle adjusted dimensions
             if min_channels != self.dim:
+                # create temporary projections for dimension mismatch
                 temp_rgb_proj = nn.Linear(min_channels, self.num_heads * self.head_dim * 3).to(rgb_feat.device)
                 temp_ycbcr_proj = nn.Linear(min_channels, self.num_heads * self.head_dim * 3).to(ycbcr_feat.device)
                 temp_out_proj = nn.Linear(self.num_heads * self.head_dim, min_channels).to(rgb_feat.device)
+                temp_norm = nn.LayerNorm(min_channels).to(rgb_feat.device)
+                
+                # initialize temporary projections
+                nn.init.xavier_uniform_(temp_rgb_proj.weight)
+                nn.init.xavier_uniform_(temp_ycbcr_proj.weight)
+                nn.init.xavier_uniform_(temp_out_proj.weight)
+                nn.init.zeros_(temp_rgb_proj.bias)
+                nn.init.zeros_(temp_ycbcr_proj.bias)
+                nn.init.zeros_(temp_out_proj.bias)
             else:
                 temp_rgb_proj = self.rgb_proj
                 temp_ycbcr_proj = self.ycbcr_proj
                 temp_out_proj = self.out_proj
+                temp_norm = self.norm
         else:
             temp_rgb_proj = self.rgb_proj
             temp_ycbcr_proj = self.ycbcr_proj
             temp_out_proj = self.out_proj
+            temp_norm = self.norm
         
         B, C, H, W = rgb_feat.shape
         
         # reshape features to sequence form
-        rgb_feat = rgb_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
-        ycbcr_feat = ycbcr_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
+        rgb_feat_seq = rgb_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
+        ycbcr_feat_seq = ycbcr_feat.reshape(B, C, -1).permute(0, 2, 1)  # [B, H*W, C]
         
-        # compute
-        rgb_qkv = temp_rgb_proj(rgb_feat).reshape(B, -1, 3, self.num_heads, self.head_dim)
+        # apply layer normalization for stability
+        rgb_feat_norm = temp_norm(rgb_feat_seq)
+        ycbcr_feat_norm = temp_norm(ycbcr_feat_seq)
+        
+        # compute QKV for both modalities
+        rgb_qkv = temp_rgb_proj(rgb_feat_norm).reshape(B, -1, 3, self.num_heads, self.head_dim)
         rgb_q, rgb_k, rgb_v = rgb_qkv.unbind(dim=2)
         
-        ycbcr_qkv = temp_ycbcr_proj(ycbcr_feat).reshape(B, -1, 3, self.num_heads, self.head_dim)
+        ycbcr_qkv = temp_ycbcr_proj(ycbcr_feat_norm).reshape(B, -1, 3, self.num_heads, self.head_dim)
         ycbcr_q, ycbcr_k, ycbcr_v = ycbcr_qkv.unbind(dim=2)
         
-        # cross-attention: RGB_q and YCbCr_k
+        # bidirectional cross-attention with improved stability
+        # RGB queries attending to YCbCr keys/values
         attn1 = torch.einsum('bnhd,bmhd->bnmh', rgb_q, ycbcr_k) * self.scale
-        attn1 = attn1.softmax(dim=2)
+        attn1 = F.softmax(attn1, dim=2)
+        attn1 = F.dropout(attn1, p=0.1, training=self.training)  # attention dropout
         out1 = torch.einsum('bnmh,bmhd->bnhd', attn1, ycbcr_v)
         
-        # cross-attention: YCbCr_q and RGB_k
+        # YCbCr queries attending to RGB keys/values
         attn2 = torch.einsum('bnhd,bmhd->bnmh', ycbcr_q, rgb_k) * self.scale
-        attn2 = attn2.softmax(dim=2)
+        attn2 = F.softmax(attn2, dim=2)
+        attn2 = F.dropout(attn2, p=0.1, training=self.training)  # attention dropout
         out2 = torch.einsum('bnmh,bmhd->bnhd', attn2, rgb_v)
         
-        # fuse bidirectional cross-attention results
-        out = out1 + out2
+        # adaptive fusion with learnable weight
+        fusion_weight = torch.sigmoid(self.fusion_weight)  # ensure weight is in [0,1]
+        out = fusion_weight * out1 + (1 - fusion_weight) * out2
+        
+        # reshape and project output
         out = out.reshape(B, -1, self.num_heads * self.head_dim)
         out = temp_out_proj(out)
         
-        # reshape back to original shape
+        # residual connection with original RGB features
+        out = out + rgb_feat_seq
+        
+        # reshape back to original spatial format
         out = out.permute(0, 2, 1).reshape(B, C, H, W)
         
         return out

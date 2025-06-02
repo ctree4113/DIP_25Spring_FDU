@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import cv2
 import glob
@@ -23,24 +23,27 @@ def main(args) -> None:
     cfg = OmegaConf.load(args.config)
     os.makedirs(cfg.inference.result_folder, exist_ok=True)
 
-    # Intialize the text guidance components
+    # Initialize text guidance components
     prompt_pool = TextPromptPool()
     fog_analyzer = FogAnalyzer(device=device)
-    text_processor = TextCondProcessor(embed_dim=1024).to(device)
+    
+    # lightweight text processor for inference
+    text_processor = None
+    if cfg.inference.get('use_text_processor', True):
+        text_processor = TextCondProcessor(embed_dim=1024).to(device)
+        text_processor.eval()
 
     # Create model:
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
     sd = torch.load(cfg.inference.sd_path, map_location="cpu")["state_dict"]
     unused, missing = cldm.load_pretrained_sd(sd)
     print(
-        f"strictly load pretrained SD weight from {cfg.inference.sd_path}\n"
-        f"unused weights: {unused}\n"
-        f"missing weights: {missing}"
+        f"Loaded pretrained SD weights from {cfg.inference.sd_path}"
     )
 
     cldm.load_controlnet_from_ckpt(torch.load(cfg.inference.controlnet_path, map_location="cpu"))
     print(
-        f"strictly load controlnet weight from checkpoint: {cfg.inference.controlnet_path}"
+        f"Loaded controlnet weights from checkpoint: {cfg.inference.controlnet_path}"
     )
 
     cldm.eval().to(device)
@@ -53,14 +56,28 @@ def main(args) -> None:
 
     rescaler = Resize(512, interpolation=InterpolationMode.BICUBIC, antialias=True)
 
+    # Handle both PASCAL VOC format and simple directory format
+    image_folder = cfg.inference.image_folder
+    
+    # Check if it's PASCAL VOC format (has JPEGImages subdirectory)
+    jpeg_images_path = os.path.join(image_folder, 'JPEGImages')
+    if os.path.exists(jpeg_images_path):
+        print(f"Detected PASCAL VOC format dataset, using JPEGImages directory: {jpeg_images_path}")
+        search_folder = jpeg_images_path
+    else:
+        print(f"Using simple directory format: {image_folder}")
+        search_folder = image_folder
+
     image_names = [
         os.path.basename(name)
         for ext in ("*.jpg", "*.jpeg", "*.png")
-        for name in glob.glob(os.path.join(cfg.inference.image_folder, ext))
+        for name in glob.glob(os.path.join(search_folder, ext))
     ]
+    
+    print(f"Found {len(image_names)} images to process")
 
     for image_name in tqdm(image_names):
-        image = cv2.imread(os.path.join(cfg.inference.image_folder, image_name))
+        image = cv2.imread(os.path.join(search_folder, image_name))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = ToTensor()(image).unsqueeze(0)
 
@@ -71,28 +88,49 @@ def main(args) -> None:
 
         image = pad_to_multiples_of(image, multiple=64).to(device)
         
-        # use fog analyzer to generate the optimal prompt
+        # intelligent prompt selection
         if cfg.inference.get('use_dynamic_prompt', True):
-            optimal_prompt = fog_analyzer.select_optimal_prompt(image, prompt_pool)
-            prompts = [optimal_prompt]
-            print(f"analyze image {image_name} - use prompt: {optimal_prompt}")
+            try:
+                optimal_prompt = fog_analyzer.select_optimal_prompt(image, prompt_pool)
+                prompts = [optimal_prompt]
+                if cfg.inference.get('verbose', False):
+                    print(f"Selected prompt for {image_name}: {optimal_prompt}")
+            except Exception as e:
+                print(f"Failed to analyze {image_name}, using default prompt: {e}")
+                prompts = ['remove dense fog']
         else:
-            prompts = ['remove dense fog']
+            prompts = cfg.inference.get('default_prompts', ['remove dense fog'])
 
-        cond = cldm.prepare_condition(
-            image,
-            prompts,
-        )
+        # prepare conditions
+        cond = cldm.prepare_condition(image, prompts)
         
-        # use text condition optimization processing
-        if cfg.inference.get('use_text_processor', True):
-            cond['c_crossattn'] = text_processor(cond['c_txt'])
-            cond['c_txt'] = cond['c_crossattn']
+        # enhanced text condition processing
+        if text_processor is not None:
+            try:
+                with torch.no_grad():
+                    enhanced_text = text_processor(cond['c_txt'])
+                    cond['c_txt'] = enhanced_text
+            except Exception as e:
+                print(f"Text processing failed for {image_name}, using original text: {e}")
+
+        # adaptive sampling steps based on image complexity
+        sample_steps = cfg.inference.get('steps', 50)
+        if cfg.inference.get('adaptive_steps', False):
+            # estimate complexity based on gradient
+            gray = torch.mean(image, dim=1, keepdim=True)
+            grad_x = torch.abs(gray[:, :, :, 1:] - gray[:, :, :, :-1])
+            grad_y = torch.abs(gray[:, :, 1:, :] - gray[:, :, :-1, :])
+            complexity = torch.mean(grad_x) + torch.mean(grad_y)
+            
+            if complexity > 0.15:  # high complexity
+                sample_steps = min(50, sample_steps + 10)
+            elif complexity < 0.05:  # low complexity
+                sample_steps = max(20, sample_steps - 10)
 
         z = sampler.sample(
             model=cldm,
             device=device,
-            steps=50,
+            steps=sample_steps,
             x_size=cond['c_img'].shape,
             cond=cond,
             uncond=None,
