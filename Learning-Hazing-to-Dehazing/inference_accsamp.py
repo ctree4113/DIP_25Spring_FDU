@@ -1,9 +1,9 @@
 import os
 
-# adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import cv2
+import gc
 import glob
 import torch
 import torchvision
@@ -24,6 +24,10 @@ def main(args) -> None:
     cfg = OmegaConf.load(args.config)
     os.makedirs(cfg.inference.result_folder, exist_ok=True)
 
+    # enable memory optimization
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    
     # Create model:
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
     sd = torch.load(cfg.inference.sd_path, map_location="cpu")["state_dict"]
@@ -49,7 +53,7 @@ def main(args) -> None:
     )
     guidance: Guidance = instantiate_from_config(cfg.guidance)
 
-    rescaler = Resize(512, interpolation=InterpolationMode.BICUBIC, antialias=True)
+    rescaler = Resize(384, interpolation=InterpolationMode.BICUBIC, antialias=True)
 
     image_names = [
         os.path.basename(name)
@@ -58,12 +62,16 @@ def main(args) -> None:
     ]
 
     for image_name in tqdm(image_names):
+        # clear gpu cache
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         image = cv2.imread(os.path.join(cfg.inference.image_folder, image_name))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = ToTensor()(image).unsqueeze(0)
 
         _, _, h, w = image.shape
-        if h < 512 or w < 512:
+        if h < 384 or w < 384:
             image = rescaler(image)
         _, _, h_, w_ = image.shape
 
@@ -85,7 +93,7 @@ def main(args) -> None:
             hazy=image,
             diffusion=diffusion,
             cfg_scale=1.,
-            progress=False,
+            progress=True,  # show progress
             proportions=[cfg.inference.tau, cfg.inference.omega]
         )
 
@@ -94,6 +102,11 @@ def main(args) -> None:
         result = Resize((h, w), interpolation=InterpolationMode.BICUBIC, antialias=True)(result)
         torchvision.utils.save_image(result.squeeze(0),
                                      os.path.join(cfg.inference.result_folder, f'{image_name[:-4]}.png'))
+        
+        # clear intermediate variables
+        del image, cond, z, result
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 if __name__ == "__main__":
