@@ -1,0 +1,104 @@
+\begin{thebibliography}{15}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Cai et~al.(2016)Cai, Xu, Jia, Qing, and Tao]{cai2016dehazenet}
+B.~Cai, X.~Xu, K.~Jia, C.~Qing, and D.~Tao.
+\newblock Dehazenet: An end-to-end system for single image haze removal.
+\newblock \emph{IEEE Transactions on Image Processing}, 25\penalty0
+  (11):\penalty0 5187--5198, 2016.
+
+\bibitem[Chen et~al.(2021)Chen, Wang, Yang, and Liu]{chen2021psd}
+Z.~Chen, Y.~Wang, Y.~Yang, and D.~Liu.
+\newblock Psd: Principled synthetic-to-real dehazing guided by physical priors.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pages 7180--7189, 2021.
+
+\bibitem[Dong et~al.(2020)Dong, Pan, Xiang, Hu, Zhang, Wang, and
+  Yang]{dong2020multi}
+H.~Dong, J.~Pan, L.~Xiang, Z.~Hu, X.~Zhang, F.~Wang, and M.-H. Yang.
+\newblock Multi-scale boosted dehazing network with dense feature fusion.
+\newblock In \emph{Proceedings of the IEEE/CVF conference on computer vision
+  and pattern recognition}, pages 2157--2167, 2020.
+
+\bibitem[Fang et~al.(2025)Fang, Fan, Zheng, Weng, Tai, and Li]{fang2025guided}
+W.~Fang, J.~Fan, Y.~Zheng, J.~Weng, Y.~Tai, and J.~Li.
+\newblock Guided real image dehazing using ycbcr color space.
+\newblock In \emph{Proceedings of the AAAI Conference on Artificial
+  Intelligence}, 2025.
+
+\bibitem[He et~al.(2010)He, Sun, and Tang]{he2010single}
+K.~He, J.~Sun, and X.~Tang.
+\newblock Single image haze removal using dark channel prior.
+\newblock \emph{IEEE transactions on pattern analysis and machine
+  intelligence}, 33\penalty0 (12):\penalty0 2341--2353, 2010.
+
+\bibitem[Li et~al.(2017)Li, Peng, Wang, Xu, and Feng]{li2017aod}
+B.~Li, X.~Peng, Z.~Wang, J.~Xu, and D.~Feng.
+\newblock Aod-net: All-in-one dehazing network.
+\newblock In \emph{Proceedings of the IEEE international conference on computer
+  vision}, pages 4770--4778, 2017.
+
+\bibitem[Lin et~al.(2023)Lin, Chen, Zhang, Dong, Wen, and Yuan]{lin2023diffbir}
+X.~Lin, Z.~Chen, X.~Zhang, J.~Dong, J.~Wen, and P.~Yuan.
+\newblock Diffbir: Towards blind image restoration with generative diffusion
+  prior.
+\newblock \emph{arXiv preprint arXiv:2308.15070}, 2023.
+
+\bibitem[McCartney(1976)]{mccartney1976optics}
+E.~J. McCartney.
+\newblock \emph{Optics of the atmosphere: scattering by molecules and
+  particles}.
+\newblock John Wiley \& Sons, 1976.
+
+\bibitem[Qin et~al.(2020)Qin, Wang, Bai, Xie, and Jia]{qin2020ffa}
+X.~Qin, Z.~Wang, Y.~Bai, X.~Xie, and H.~Jia.
+\newblock Ffa-net: Feature fusion attention network for single image dehazing.
+\newblock In \emph{Proceedings of the AAAI conference on artificial
+  intelligence}, volume~34, pages 11908--11915, 2020.
+
+\bibitem[Shao et~al.(2020)Shao, Li, Ren, Gao, and Sang]{shao2020domain}
+Y.~Shao, L.~Li, W.~Ren, C.~Gao, and N.~Sang.
+\newblock Domain adaptation for image dehazing.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pages 2808--2817, 2020.
+
+\bibitem[Wang et~al.(2025)Wang, Zheng, Zhang, Li, Liu, Zhai, and
+  Liu]{wang2025learning}
+R.~Wang, Y.~Zheng, Z.~Zhang, C.~Li, S.~Liu, G.~Zhai, and X.~Liu.
+\newblock Learning hazing to dehazing: Towards realistic haze generation for
+  real-world image dehazing.
+\newblock \emph{arXiv preprint arXiv:2503.19262}, 2025.
+
+\bibitem[Wu et~al.(2023)Wu, Duan, Guo, Chai, and Li]{wu2023ridcp}
+R.-Q. Wu, Z.-P. Duan, C.-L. Guo, Z.~Chai, and C.~Li.
+\newblock Ridcp: Revitalizing real image dehazing via high-quality codebook
+  priors.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pages 22282--22291, 2023.
+
+\bibitem[Yang et~al.(2022)Yang, Wang, Liu, Zhang, Guo, and Tao]{yang2022self}
+Y.~Yang, C.~Wang, R.~Liu, L.~Zhang, X.~Guo, and D.~Tao.
+\newblock Self-augmented unpaired image dehazing via density and depth
+  decomposition.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pages 2037--2046, 2022.
+
+\bibitem[Zhang et~al.(2023)Zhang, Li, Liang, Cao, Zhang, Tang, Fan, Timofte,
+  and Van~Gool]{zhang2023iterative}
+K.~Zhang, Y.~Li, J.~Liang, J.~Cao, Y.~Zhang, H.~Tang, D.-P. Fan, R.~Timofte,
+  and L.~Van~Gool.
+\newblock Iterative refinement for image restoration: A comprehensive survey.
+\newblock \emph{arXiv preprint arXiv:2303.08714}, 2023.
+
+\bibitem[Zhu et~al.(2015)Zhu, Mai, and Shao]{zhu2015fast}
+Q.~Zhu, J.~Mai, and L.~Shao.
+\newblock A fast single image haze removal algorithm using color attenuation
+  prior.
+\newblock \emph{IEEE transactions on image processing}, 24\penalty0
+  (11):\penalty0 3522--3533, 2015.
+
+\end{thebibliography}
