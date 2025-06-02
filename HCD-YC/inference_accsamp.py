@@ -85,7 +85,7 @@ def main(args) -> None:
         z = sampler.accsamp(
             model=cldm,
             device=device,
-            steps=50,
+            steps=30,
             x_size=cond['c_img'].shape,
             cond=cond,
             uncond=None,

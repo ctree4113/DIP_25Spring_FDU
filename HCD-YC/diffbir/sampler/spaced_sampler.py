@@ -11,6 +11,7 @@ from ..model.gaussian_diffusion import Diffusion
 from ..utils.cond_fn import Guidance
 from ..utils.common import make_tiled_fn, trace_vram_usage
 from utils.align_utils import tiled_align
+from utils.isr_align_utils import isr_tiled_align, adaptive_isr_tiled_align, multi_scale_isr_align
 from utils.dcp_utils import compute_transmission
 
 
@@ -36,12 +37,12 @@ def space_timesteps(num_timesteps, section_counts):
     """
     if isinstance(section_counts, str):
         if section_counts.startswith("ddim"):
-            desired_count = int(section_counts[len("ddim") :])
+            desired_count = int(section_counts[len("ddim"):])
             for i in range(1, num_timesteps):
                 if len(range(0, num_timesteps, i)) == desired_count:
                     return set(range(0, num_timesteps, i))
             raise ValueError(
-                f"cannot create exactly {num_timesteps} steps with an integer stride"
+                f"cannot create exactly {desired_count} steps with an integer stride"
             )
         section_counts = [int(x) for x in section_counts.split(",")]
     size_per = num_timesteps // len(section_counts)
@@ -52,7 +53,7 @@ def space_timesteps(num_timesteps, section_counts):
         size = size_per + (1 if i < extra else 0)
         if size < section_count:
             raise ValueError(
-                f"cannot divide section of {size} steps into {section_count}"
+                f"cannot divide section of size {size} into {section_count} steps"
             )
         if section_count <= 1:
             frac_stride = 1
@@ -145,50 +146,35 @@ class SpacedSampler(Sampler):
             - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * v
         )
 
+    def _predict_eps_from_xstart(
+        self, x_t: torch.Tensor, t: torch.Tensor, x_start: torch.Tensor
+    ) -> torch.Tensor:
+        return (
+            extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
+            - x_start
+        ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
+
     def apply_cond_fn(
         self,
         model: ControlLDM,
         pred_x0: torch.Tensor,
         t: torch.Tensor,
-        index: torch.Tensor,
+        x_sample_t: torch.Tensor,
         cond_fn: Guidance
     ) -> torch.Tensor:
-        t_now = int(t[0].item()) + 1
-        if not (cond_fn.t_stop < t_now and t_now < cond_fn.t_start):
-            # stop guidance
-            return pred_x0
-        grad_rescale = 1 / extract_into_tensor(self.posterior_mean_coef1, index, pred_x0.shape)
-        # apply guidance for multiple times
-        loss_vals = []
-        for _ in range(cond_fn.repeat):
-            # set target and pred for gradient computation
-            target, pred = None, None
-            if cond_fn.space == "latent":
-                target = model.vae_encode(cond_fn.target)
-                pred = pred_x0
-            elif cond_fn.space == "rgb":
-                # We need to backward gradient to x0 in latent space, so it's required
-                # to trace the computation graph while decoding the latent.
-                with torch.enable_grad():
-                    target = cond_fn.target
-                    pred_x0_rg = pred_x0.detach().clone().requires_grad_(True)
-                    pred = model.vae_decode(pred_x0_rg)
-                    assert pred.requires_grad
-            else:
-                raise NotImplementedError(cond_fn.space)
-            # compute gradient
-            delta_pred, loss_val = cond_fn(target, pred, t_now)
-            loss_vals.append(loss_val)
-            # update pred_x0 w.r.t gradient
-            if cond_fn.space == "latent":
-                delta_pred_x0 = delta_pred
-                pred_x0 = pred_x0 + delta_pred_x0 * grad_rescale
-            elif cond_fn.space == "rgb":
-                pred.backward(delta_pred)
-                delta_pred_x0 = pred_x0_rg.grad
-                pred_x0 = pred_x0 + delta_pred_x0 * grad_rescale
-            else:
-                raise NotImplementedError(cond_fn.space)
+        if cond_fn:
+            # Convert latent predictions to pixel space for guidance
+            pred_pixel = model.vae_decode(pred_x0.detach().clone())
+            pred_pixel.requires_grad_(True)
+            
+            # Get target in pixel space (should already be loaded in guidance)
+            # The guidance function expects (target_x0, pred_x0, t)
+            delta_pred_pixel, _ = cond_fn(cond_fn.target, pred_pixel, t.item())
+            pred_pixel.backward(delta_pred_pixel)
+            
+            # Convert gradient back to latent space
+            delta_pred_latent = model.vae_encode(pred_pixel.grad.data, sample=False)
+            return pred_x0 + delta_pred_latent
         return pred_x0
 
     def apply_model(
@@ -229,7 +215,7 @@ class SpacedSampler(Sampler):
             pred_x0 = self._predict_xstart_from_v(x, t, model_output)
 
         if cond_fn:
-            pred_x0 = self.apply_cond_fn(model, pred_x0, model_t, t, cond_fn)
+            pred_x0 = self.apply_cond_fn(model, pred_x0, t, x, cond_fn)
         # calculate mean and variance of next state
         mean, variance = self.q_posterior_mean_variance(pred_x0, x, t)
         # sample next state
@@ -303,6 +289,191 @@ class SpacedSampler(Sampler):
         return x
 
     @torch.no_grad()
+    def accsamp_isr(
+        self,
+        model: ControlLDM,
+        device: str,
+        steps: int,
+        x_size: Tuple[int],
+        cond: Dict[str, torch.Tensor],
+        uncond: Dict[str, torch.Tensor],
+        cfg_scale: float,
+        cond_fn: Guidance,
+        hazy: torch.Tensor,
+        diffusion: Diffusion,
+        x_T: torch.Tensor | None = None,
+        progress: bool = True,
+        progress_leave: bool = True,
+        proportions: List[float] = None,
+        isr_mode: str = "basic",  # "basic", "adaptive", "multi_scale"
+        isr_config: Dict = None,
+        verbose: bool = False,
+    ) -> torch.Tensor:
+        """
+        AccSamp with ISR-AlignOp (Iterative Statistical Refinement)
+        
+        Args:
+            isr_mode: ISR mode - "basic", "adaptive", "multi_scale"
+            isr_config: ISR configuration dictionary
+            verbose: Whether to print detailed information
+        """
+        
+        if proportions is None:
+            proportions = [0.8, 0.6]
+            
+        if isr_config is None:
+            isr_config = {
+                "quality_threshold": 0.1,  # for adaptive mode
+                "scales": [37, 25, 15],     # for multi_scale mode
+                "kernel_size": 37,
+                "stride": 10,
+                "low_memory": True
+            }
+
+        if verbose:
+            print(f"AccSamp-ISR: Using ISR mode '{isr_mode}' with proportions {proportions}")
+
+        self.make_schedule(steps)
+        self.to(device)
+        if x_T is None:
+            x_T = torch.randn(x_size, device=device, dtype=torch.float32)
+
+        x = x_T
+        timesteps = np.flip(self.timesteps)
+        total_steps = len(self.timesteps)
+        iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
+        bs = x_size[0]
+
+        # ISR-AlignOp enhanced dehazing estimate generation phase
+        early_pred_a = None  # Very early prediction P_a
+        early_pred_b = None  # Slightly later prediction P_b
+        estimate = None
+
+        for i, step in enumerate(iterator):
+            model_t = torch.full((bs,), step, device=device, dtype=torch.long)
+            t = torch.full((bs,), total_steps - i - 1, device=device, dtype=torch.long)
+            cur_cfg_scale = self.get_cfg_scale(cfg_scale, step)
+            
+            current_progress = (i + 1) / len(iterator)
+            tau_threshold = round(1.0 - proportions[0], 2)
+            
+            if current_progress < tau_threshold:
+                # Standard diffusion without guidance
+                x = self.p_sample(
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=False
+                )
+                
+                # ISR-AlignOp: Collect early predictions at two different time points
+                if early_pred_a is None and current_progress >= tau_threshold * 0.3:
+                    # Collect very early prediction P_a (at 30% of τ)
+                    early_pred_a = self.p_sample(
+                        model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
+                    )
+                    early_pred_a = model.vae_decode(early_pred_a)
+                    if verbose:
+                        print(f"  ISR: Collected early prediction A at progress {current_progress:.3f}")
+                
+                elif early_pred_b is None and current_progress >= tau_threshold * 0.7:
+                    # Collect slightly later prediction P_b (at 70% of τ)
+                    early_pred_b = self.p_sample(
+                        model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
+                    )
+                    early_pred_b = model.vae_decode(early_pred_b)
+                    if verbose:
+                        print(f"  ISR: Collected early prediction B at progress {current_progress:.3f}")
+                        
+            elif current_progress == tau_threshold:
+                # Execute ISR-AlignOp at τ time point
+                if early_pred_a is None or early_pred_b is None:
+                    # Fallback to standard AlignOp
+                    pred_x0 = self.p_sample(
+                        model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
+                    )
+                    pred_x0 = model.vae_decode(pred_x0)
+                    estimate = tiled_align(hazy * 2. - 1., pred_x0)
+                    if verbose:
+                        print("  ISR: Fallback to standard AlignOp")
+                else:
+                    # Execute ISR-AlignOp
+                    hazy_normalized = hazy * 2. - 1.
+                    
+                    if isr_mode == "basic":
+                        _, estimate = isr_tiled_align(
+                            hazy_normalized, early_pred_a, early_pred_b,
+                            kernel_size=isr_config["kernel_size"],
+                            stride=isr_config["stride"],
+                            low_memory=isr_config["low_memory"],
+                            verbose=verbose
+                        )
+                    elif isr_mode == "adaptive":
+                        estimate = adaptive_isr_tiled_align(
+                            hazy_normalized, early_pred_a, early_pred_b,
+                            kernel_size=isr_config["kernel_size"],
+                            stride=isr_config["stride"],
+                            quality_threshold=isr_config["quality_threshold"],
+                            low_memory=isr_config["low_memory"],
+                            verbose=verbose
+                        )
+                    elif isr_mode == "multi_scale":
+                        estimate = multi_scale_isr_align(
+                            hazy_normalized, early_pred_a, early_pred_b,
+                            scales=isr_config["scales"],
+                            stride=isr_config["stride"],
+                            low_memory=isr_config["low_memory"],
+                            verbose=verbose
+                        )
+                    else:
+                        raise ValueError(f"Unknown ISR mode: {isr_mode}")
+                    
+                    if verbose:
+                        print(f"  ISR: Applied {isr_mode} ISR-AlignOp successfully")
+                
+                # Compute transmission and prepare guidance
+                transmission = compute_transmission(hazy * 2. - 1.)
+                cond_fn.load_target(estimate)
+                cond_fn.load_transmission(transmission)
+                estimate = model.vae_encode(estimate, sample=False)
+                
+                # Clear early predictions to save memory
+                del early_pred_a, early_pred_b
+                torch.cuda.empty_cache()
+                
+            else:
+                # Continue standard diffusion without guidance
+                x = self.p_sample(
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=False
+                )
+
+        # Guidance refinement phase (maintain original logic)
+        timesteps = np.flip(self.timesteps)
+        total_steps = len(self.timesteps)
+        iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
+        for i, step in enumerate(iterator):
+            model_t = torch.full((bs,), step, device=device, dtype=torch.long)
+            t = torch.full((bs,), total_steps - i - 1, device=device, dtype=torch.long)
+            cur_cfg_scale = self.get_cfg_scale(cfg_scale, step)
+            
+            current_progress = i / len(iterator)
+            omega_threshold = round(1.0 - proportions[1], 2)
+            
+            if current_progress == omega_threshold:
+                # Start guidance phase
+                x = diffusion.q_sample(x_start=estimate, t=model_t, noise=torch.randn_like(estimate))
+                x = self.p_sample(
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn,
+                )
+            elif current_progress > omega_threshold:
+                # Continue with guidance
+                x = self.p_sample(
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn,
+                )
+            else:
+                # No action needed during this phase
+                pass
+
+        return x
+
+    @torch.no_grad()
     def accsamp(
         self,
         model: ControlLDM,
@@ -320,6 +491,7 @@ class SpacedSampler(Sampler):
         progress_leave: bool = True,
         proportions: List[float] = None,
     ) -> torch.Tensor:
+        """Keep original AccSamp interface unchanged"""
         if proportions is None:
             proportions = [0.8, 0.6]
 
