@@ -67,33 +67,36 @@ model:
         legacy: False
 
   diffusion:
-    target: diffbir.model.gaussian_diffusion.Diffusion
+    target: diffbir.model.Diffusion
     params:
       linear_start: 0.00085
       linear_end: 0.0120
       timesteps: 1000
 
-dataset:
-  train:
-    target: datasets.StaticPairedData
-    params:
-      # please fill in. These two folders contain corresponding hazy and clean image pairs. The current logic is that the hazy images are named name_index.png,
-      # and the corresponding clean image is named name.jpg (since you may want to generate multiple hazy images for one clean image). But you can easily change this in datasets.py.
-      hazy_folder: 'datasets/Generated_Hazy'
-      clean_folder: 'datasets/clear'
-      crop_size: 384
+guidance:
+  target: diffbir.utils.cond_fn.WeightedSSIMGuidance
+  params:
+    # guidance strength (baseline AlignOp configuration)
+    scale: 0.1
+    t_start: 601
+    t_stop: -1
+    space: "rgb"
+    repeat: 1
 
-train:
-  # pretrained sd path
+inference:
+  # tau and omega are proportions of the total steps, i.e., 1000 (baseline AlignOp)
+  tau: 0.8
+  omega: 0.6
+  
+  # Model weights paths
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  # experiment directory path
-  exp_dir: './experiment/stage2/'
-  learning_rate: 5e-5
-  batch_size: 64
-  num_workers: 16
-  train_steps: 20000
-  log_every: 100
-  ckpt_every: 5000
-  image_every: 1000
-  resume: ~
-  fp16: false
+  controlnet_path: 'experiment/stage2_ycbcr_hcycle/checkpoints/0020000.pt'
+  
+  # Input and output paths for RTTS evaluation
+  image_folder: '../HCD-YC/datasets/RTTS/JPEGImages'
+  result_folder: 'evaluation_outputs/baseline_stage2_results'
+  
+  # Image processing settings for evaluation
+  max_image_size: 512
+  resize_shorter_edge: 384
+  padding_multiple: 64 

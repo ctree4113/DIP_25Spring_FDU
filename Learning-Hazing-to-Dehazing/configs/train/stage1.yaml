@@ -77,8 +77,8 @@ dataset:
   train:
     target: datasets.HybridTrainingData
     params:
-      syn_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/RIDCP/"
-      real_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/Learning-Hazing-to-Dehazing/datasets/URHI/"
+      syn_folder: 'datasets/RIDCP/'
+      real_folder: 'datasets/URHI/'
       crop_size: 384
       p: 0.3
 
