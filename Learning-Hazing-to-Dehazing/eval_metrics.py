@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 import warnings
+import random
 warnings.filterwarnings("ignore")
 
 # Third-party evaluation libraries
@@ -152,8 +153,8 @@ class ImageQualityMetrics:
                 
         return results
         
-    def evaluate_dataset(self, image_folder: str, output_file: str = None) -> Dict[str, Dict[str, float]]:
-        """Evaluate entire dataset"""
+    def evaluate_dataset(self, image_folder: str, output_file: str = None, sample_size=None) -> Dict[str, Dict[str, float]]:
+        """Evaluate entire dataset with optional random sampling"""
         # Check if this is PASCAL VOC format (RTTS dataset)
         jpeg_images_path = os.path.join(image_folder, 'JPEGImages')
         if os.path.exists(jpeg_images_path):
@@ -170,8 +171,16 @@ class ImageQualityMetrics:
             
         if not image_files:
             raise ValueError(f"No images found in {actual_image_folder}")
-            
-        print(f"Found {len(image_files)} images to evaluate")
+        
+        # Apply random sampling if specified
+        total_images = len(image_files)
+        if sample_size and sample_size < total_images:
+            print(f"Randomly sampling {sample_size} images from {total_images} total images")
+            random.seed(42)  # For reproducible results
+            image_files = random.sample(image_files, sample_size)
+            print(f"Evaluation will process {len(image_files)} sampled images")
+        else:
+            print(f"Found {len(image_files)} images to evaluate")
         
         # Evaluate each image
         all_results = {}
@@ -189,7 +198,7 @@ class ImageQualityMetrics:
                         metric_sums[metric] = []
                     metric_sums[metric].append(value)
                     
-                if (i + 1) % 100 == 0:
+                if (i + 1) % 50 == 0:  # More frequent progress updates for smaller samples
                     print(f"Processed {i + 1}/{len(image_files)} images")
                     
             except Exception as e:
@@ -208,17 +217,18 @@ class ImageQualityMetrics:
             
         # Save results
         if output_file:
-            self._save_results(all_results, summary, output_file)
+            self._save_results(all_results, summary, output_file, sample_size)
             
         return {'detailed_results': all_results, 'summary': summary}
         
-    def _save_results(self, detailed_results: Dict, summary: Dict, output_file: str):
+    def _save_results(self, detailed_results: Dict, summary: Dict, output_file: str, sample_size: int):
         """Save evaluation results"""
         import json
         
         results_to_save = {
             'summary': summary,
-            'detailed_results': detailed_results
+            'detailed_results': detailed_results,
+            'sample_size': sample_size
         }
         
         with open(output_file, 'w') as f:
@@ -241,17 +251,18 @@ class ImageQualityMetrics:
 
 
 class DehazeEvaluator:
-    """Dehazing method evaluator"""
+    """Dehazing method evaluator with sampling support"""
     
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', sample_size=None):
         self.device = device
+        self.sample_size = sample_size
         self.metrics = ImageQualityMetrics(device)
         
     def compare_methods(self, 
                        method_folders: Dict[str, str],
                        dataset_folder: str = None,
                        output_file: str = 'comparison_results.json') -> Dict:
-        """Compare multiple dehazing methods"""
+        """Compare multiple dehazing methods with optional sampling"""
         
         results = {}
         
@@ -264,7 +275,10 @@ class DehazeEvaluator:
                 continue
                 
             try:
-                method_results = self.metrics.evaluate_dataset(result_folder)
+                method_results = self.metrics.evaluate_dataset(
+                    result_folder, 
+                    sample_size=self.sample_size
+                )
                 results[method_name] = method_results['summary']
                 
                 print(f"\n{method_name} evaluation completed:")
