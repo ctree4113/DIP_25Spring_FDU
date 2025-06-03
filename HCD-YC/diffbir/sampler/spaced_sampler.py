@@ -159,22 +159,45 @@ class SpacedSampler(Sampler):
         model: ControlLDM,
         pred_x0: torch.Tensor,
         t: torch.Tensor,
-        x_sample_t: torch.Tensor,
+        index: torch.Tensor,
         cond_fn: Guidance
     ) -> torch.Tensor:
-        if cond_fn:
-            # Convert latent predictions to pixel space for guidance
-            pred_pixel = model.vae_decode(pred_x0.detach().clone())
-            pred_pixel.requires_grad_(True)
-            
-            # Get target in pixel space (should already be loaded in guidance)
-            # The guidance function expects (target_x0, pred_x0, t)
-            delta_pred_pixel, _ = cond_fn(cond_fn.target, pred_pixel, t.item())
-            pred_pixel.backward(delta_pred_pixel)
-            
-            # Convert gradient back to latent space
-            delta_pred_latent = model.vae_encode(pred_pixel.grad.data, sample=False)
-            return pred_x0 + delta_pred_latent
+        t_now = int(t[0].item()) + 1
+        if not (cond_fn.t_stop < t_now and t_now < cond_fn.t_start):
+            # stop guidance
+            return pred_x0
+        grad_rescale = 1 / extract_into_tensor(self.posterior_mean_coef1, index, pred_x0.shape)
+        # apply guidance for multiple times
+        loss_vals = []
+        for _ in range(cond_fn.repeat):
+            # set target and pred for gradient computation
+            target, pred = None, None
+            if cond_fn.space == "latent":
+                target = model.vae_encode(cond_fn.target)
+                pred = pred_x0
+            elif cond_fn.space == "rgb":
+                # We need to backward gradient to x0 in latent space, so it's required
+                # to trace the computation graph while decoding the latent.
+                with torch.enable_grad():
+                    target = cond_fn.target
+                    pred_x0_rg = pred_x0.detach().clone().requires_grad_(True)
+                    pred = model.vae_decode(pred_x0_rg)
+                    assert pred.requires_grad
+            else:
+                raise NotImplementedError(cond_fn.space)
+            # compute gradient
+            delta_pred, loss_val = cond_fn(target, pred, t_now)
+            loss_vals.append(loss_val)
+            # update pred_x0 w.r.t gradient
+            if cond_fn.space == "latent":
+                delta_pred_x0 = delta_pred
+                pred_x0 = pred_x0 + delta_pred_x0 * grad_rescale
+            elif cond_fn.space == "rgb":
+                pred.backward(delta_pred)
+                delta_pred_x0 = pred_x0_rg.grad
+                pred_x0 = pred_x0 + delta_pred_x0 * grad_rescale
+            else:
+                raise NotImplementedError(cond_fn.space)
         return pred_x0
 
     def apply_model(
@@ -215,7 +238,7 @@ class SpacedSampler(Sampler):
             pred_x0 = self._predict_xstart_from_v(x, t, model_output)
 
         if cond_fn:
-            pred_x0 = self.apply_cond_fn(model, pred_x0, t, x, cond_fn)
+            pred_x0 = self.apply_cond_fn(model, pred_x0, model_t, t, cond_fn)
         # calculate mean and variance of next state
         mean, variance = self.q_posterior_mean_variance(pred_x0, x, t)
         # sample next state
@@ -311,11 +334,6 @@ class SpacedSampler(Sampler):
     ) -> torch.Tensor:
         """
         AccSamp with ISR-AlignOp (Iterative Statistical Refinement)
-        
-        Args:
-            isr_mode: ISR mode - "basic", "adaptive", "multi_scale"
-            isr_config: ISR configuration dictionary
-            verbose: Whether to print detailed information
         """
         
         if proportions is None:
@@ -323,8 +341,8 @@ class SpacedSampler(Sampler):
             
         if isr_config is None:
             isr_config = {
-                "quality_threshold": 0.1,  # for adaptive mode
-                "scales": [37, 25, 15],     # for multi_scale mode
+                "quality_threshold": 0.1,
+                "scales": [37, 25, 15],
                 "kernel_size": 37,
                 "stride": 10,
                 "low_memory": True
@@ -344,62 +362,75 @@ class SpacedSampler(Sampler):
         iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
         bs = x_size[0]
 
-        # ISR-AlignOp enhanced dehazing estimate generation phase
-        early_pred_a = None  # Very early prediction P_a
-        early_pred_b = None  # Slightly later prediction P_b
+        # ISR-AlignOp enhanced variables
+        early_pred_a = None
+        early_pred_b = None
         estimate = None
+        estimate_latent = None
+        
+        # Critical fix: use integer step indices instead of floating point ratios
+        tau_step = int(total_steps * (1.0 - proportions[0]))  # tau step index
+        omega_step = int(total_steps * (1.0 - proportions[1]))  # omega step index
+        
+        # ISR timing based on step indices
+        tau_a_step = int(tau_step * 0.25)  # Early prediction A at 25% of tau
+        tau_b_step = int(tau_step * 0.75)  # Early prediction B at 75% of tau
+        
+        if verbose:
+            print(f"  ISR Timing: tau_step={tau_step}, omega_step={omega_step}")
+            print(f"  ISR Collection: tau_a_step={tau_a_step}, tau_b_step={tau_b_step}")
 
+        # Main diffusion loop
         for i, step in enumerate(iterator):
             model_t = torch.full((bs,), step, device=device, dtype=torch.long)
             t = torch.full((bs,), total_steps - i - 1, device=device, dtype=torch.long)
             cur_cfg_scale = self.get_cfg_scale(cfg_scale, step)
             
-            current_progress = (i + 1) / len(iterator)
-            tau_threshold = round(1.0 - proportions[0], 2)
-            
-            if current_progress < tau_threshold:
+            # Phase 1: Early diffusion with ISR prediction collection
+            if i < tau_step:
                 # Standard diffusion without guidance
                 x = self.p_sample(
-                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=False
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None
                 )
                 
-                # ISR-AlignOp: Collect early predictions at two different time points
-                if early_pred_a is None and current_progress >= tau_threshold * 0.3:
-                    # Collect very early prediction P_a (at 30% of τ)
+                # ISR prediction collection at strategic points
+                if early_pred_a is None and i == tau_a_step:
                     early_pred_a = self.p_sample(
                         model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
                     )
-                    early_pred_a = model.vae_decode(early_pred_a)
                     if verbose:
-                        print(f"  ISR: Collected early prediction A at progress {current_progress:.3f}")
+                        print(f"  ISR: Collected early prediction A at step {i}")
                 
-                elif early_pred_b is None and current_progress >= tau_threshold * 0.7:
-                    # Collect slightly later prediction P_b (at 70% of τ)
+                if early_pred_b is None and i == tau_b_step:
                     early_pred_b = self.p_sample(
                         model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
                     )
-                    early_pred_b = model.vae_decode(early_pred_b)
                     if verbose:
-                        print(f"  ISR: Collected early prediction B at progress {current_progress:.3f}")
+                        print(f"  ISR: Collected early prediction B at step {i}")
                         
-            elif current_progress == tau_threshold:
-                # Execute ISR-AlignOp at τ time point
+            # Phase 2: Tau step - Execute ISR-AlignOp  
+            elif i == tau_step:
+                if verbose:
+                    print(f"  ISR: Executing ISR-AlignOp at tau step {i}")
+                
                 if early_pred_a is None or early_pred_b is None:
                     # Fallback to standard AlignOp
                     pred_x0 = self.p_sample(
                         model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=True
                     )
-                    pred_x0 = model.vae_decode(pred_x0)
-                    estimate = tiled_align(hazy * 2. - 1., pred_x0)
+                    pred_x0_img = model.vae_decode(pred_x0)
+                    estimate = tiled_align(hazy * 2. - 1., pred_x0_img)
                     if verbose:
-                        print("  ISR: Fallback to standard AlignOp")
+                        print("    Using standard AlignOp (fallback)")
                 else:
                     # Execute ISR-AlignOp
                     hazy_normalized = hazy * 2. - 1.
+                    early_pred_a_img = model.vae_decode(early_pred_a)
+                    early_pred_b_img = model.vae_decode(early_pred_b)
                     
                     if isr_mode == "basic":
                         _, estimate = isr_tiled_align(
-                            hazy_normalized, early_pred_a, early_pred_b,
+                            hazy_normalized, early_pred_a_img, early_pred_b_img,
                             kernel_size=isr_config["kernel_size"],
                             stride=isr_config["stride"],
                             low_memory=isr_config["low_memory"],
@@ -407,7 +438,7 @@ class SpacedSampler(Sampler):
                         )
                     elif isr_mode == "adaptive":
                         estimate = adaptive_isr_tiled_align(
-                            hazy_normalized, early_pred_a, early_pred_b,
+                            hazy_normalized, early_pred_a_img, early_pred_b_img,
                             kernel_size=isr_config["kernel_size"],
                             stride=isr_config["stride"],
                             quality_threshold=isr_config["quality_threshold"],
@@ -416,60 +447,57 @@ class SpacedSampler(Sampler):
                         )
                     elif isr_mode == "multi_scale":
                         estimate = multi_scale_isr_align(
-                            hazy_normalized, early_pred_a, early_pred_b,
+                            hazy_normalized, early_pred_a_img, early_pred_b_img,
                             scales=isr_config["scales"],
                             stride=isr_config["stride"],
                             low_memory=isr_config["low_memory"],
                             verbose=verbose
                         )
-                    else:
-                        raise ValueError(f"Unknown ISR mode: {isr_mode}")
                     
                     if verbose:
-                        print(f"  ISR: Applied {isr_mode} ISR-AlignOp successfully")
+                        print(f"    Applied {isr_mode} ISR-AlignOp successfully")
                 
-                # Compute transmission and prepare guidance
+                # Prepare guidance
                 transmission = compute_transmission(hazy * 2. - 1.)
                 cond_fn.load_target(estimate)
-                cond_fn.load_transmission(transmission)
-                estimate = model.vae_encode(estimate, sample=False)
+                cond_fn.load_transmission(transmission) 
+                estimate_latent = model.vae_encode(estimate, sample=False)
                 
-                # Clear early predictions to save memory
+                # Clean up memory
                 del early_pred_a, early_pred_b
+                if 'early_pred_a_img' in locals():
+                    del early_pred_a_img, early_pred_b_img
                 torch.cuda.empty_cache()
                 
-            else:
-                # Continue standard diffusion without guidance
+                # Continue standard diffusion
                 x = self.p_sample(
-                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None, return_pred=False
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None
                 )
-
-        # Guidance refinement phase (maintain original logic)
-        timesteps = np.flip(self.timesteps)
-        total_steps = len(self.timesteps)
-        iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
-        for i, step in enumerate(iterator):
-            model_t = torch.full((bs,), step, device=device, dtype=torch.long)
-            t = torch.full((bs,), total_steps - i - 1, device=device, dtype=torch.long)
-            cur_cfg_scale = self.get_cfg_scale(cfg_scale, step)
-            
-            current_progress = i / len(iterator)
-            omega_threshold = round(1.0 - proportions[1], 2)
-            
-            if current_progress == omega_threshold:
-                # Start guidance phase
-                x = diffusion.q_sample(x_start=estimate, t=model_t, noise=torch.randn_like(estimate))
+                        
+            # Phase 3: Intermediate steps (tau to omega) - Continue without skipping
+            elif tau_step < i < omega_step:
+                # Important: Continue diffusion, don't skip!
                 x = self.p_sample(
-                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn,
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=None
                 )
-            elif current_progress > omega_threshold:
+                
+            # Phase 4: Omega step - Start guidance refinement
+            elif i == omega_step:
+                if verbose:
+                    print(f"  ISR: Starting guidance refinement at omega step {i}")
+                
+                # Re-inject estimate with noise
+                x = diffusion.q_sample(x_start=estimate_latent, t=model_t, noise=torch.randn_like(estimate_latent))
+                x = self.p_sample(
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn
+                )
+                    
+            # Phase 5: Final guided refinement
+            elif i > omega_step:
                 # Continue with guidance
                 x = self.p_sample(
-                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn,
+                    model, x, model_t, t, cond, uncond, cur_cfg_scale, cond_fn=cond_fn
                 )
-            else:
-                # No action needed during this phase
-                pass
 
         return x
 
@@ -491,7 +519,7 @@ class SpacedSampler(Sampler):
         progress_leave: bool = True,
         proportions: List[float] = None,
     ) -> torch.Tensor:
-        """Keep original AccSamp interface unchanged"""
+        """Original AccSamp with dual diffusion loops - this is the correct design"""
         if proportions is None:
             proportions = [0.8, 0.6]
 
@@ -506,6 +534,7 @@ class SpacedSampler(Sampler):
         iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
         bs = x_size[0]
 
+        # First diffusion loop - get prediction and do AlignOp
         for i, step in enumerate(iterator):
             model_t = torch.full((bs,), step, device=device, dtype=torch.long)
             t = torch.full((bs,), total_steps - i - 1, device=device, dtype=torch.long)
@@ -527,6 +556,7 @@ class SpacedSampler(Sampler):
             else:
                 pass
 
+        # Second diffusion loop - inject estimate and apply guidance
         timesteps = np.flip(self.timesteps)
         total_steps = len(self.timesteps)
         iterator = tqdm(timesteps, total=total_steps, leave=progress_leave, disable=not progress)
