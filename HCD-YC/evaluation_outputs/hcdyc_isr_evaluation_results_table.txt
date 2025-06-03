@@ -1,0 +1,6 @@
+Image Dehazing Method Quantitative Comparison Results
+================================================================================
+
+Method                   BRISQUE       MUSIQ     CLIPIQA        LIQE      MANIQA      QALIGN        FADE
+--------------------------------------------------------------------------------
+HCD_YC_ISR              29.9930    58.6616     0.4246     2.4201     0.3219     3.2173     1.8554
