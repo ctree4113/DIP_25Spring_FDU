@@ -2,7 +2,17 @@
 
 ## Evaluation Overview
 
-This report evaluates the baseline method 'Learning Hazing to Dehazing' on RTTS dataset.
+This report evaluates the baseline method 'Learning Hazing to Dehazing' with standard AlignOp on RTTS dataset using the same evaluation framework as the HCD-YC enhanced method for fair comparison.
+
+**Evaluation Sample Size:** 200 randomly selected images
+
+## Baseline Method Features
+
+The baseline evaluation uses:
+- **Standard AlignOp**: Original alignment operation without ISR enhancement
+- **AccSamp sampling**: τ=0.8, ω=0.6 (original paper settings)
+- **Standard ControlNet**: Without YCbCr fusion enhancements
+- **Basic guidance**: WeightedSSIMGuidance with scale=0.1
 
 ## Evaluation Metrics
 
@@ -20,10 +30,16 @@ Using the following no-reference image quality assessment metrics:
 
 | Method | FADE | Q-Align | LIQE | CLIPIQA | ManIQA | MUSIQ | BRISQUE |
 |--------|------|---------|------|---------|--------|-------|----------|
-| Learning_H2D_Stage2 | 1.9932 | 3.1715 | 3.1522 | 0.4689 | 0.3829 | 64.4703 | 14.8371 |
+| Learning_H2D_Baseline | 1.9876 | 3.1532 | 1.8875 | 0.3602 | 0.2466 | 51.3133 | 32.0978 |
 
 ## Method Description
 
-### Learning_H2D_Stage2
-Learning Hazing to Dehazing - Stage2 (dehazing)
+### Learning_H2D_Baseline
+Learning Hazing to Dehazing - Baseline AlignOp (dehazing)
 
+## Baseline Performance Notes
+
+- **Standard AlignOp**: Uses single-step alignment without iterative refinement
+- **No YCbCr Enhancement**: Standard RGB processing without color space advantages
+- **Basic Guidance**: Lower guidance strength compared to ISR-enhanced version
+- **Reference Performance**: Serves as baseline for comparison with HCD-YC improvements
