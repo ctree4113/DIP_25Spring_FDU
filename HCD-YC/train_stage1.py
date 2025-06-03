@@ -1,6 +1,6 @@
 import os
 # adjust as needed
-os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1, 2, 3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
 import torch
@@ -66,8 +66,9 @@ def main(args) -> None:
         pixel_weight=cfg.train.get('pixel_weight', 1.0),
         feature_weight=cfg.train.get('feature_weight', 1.0),
         semantic_weight=cfg.train.get('semantic_weight', 0.5),
-        region_aware=cfg.train.get('region_aware', True),
-        adaptive_weight=cfg.train.get('adaptive_weight', True)
+        region_weight=cfg.train.get('region_weight', 0.2),
+        adaptive_weight=cfg.train.get('adaptive_weight', True),
+        use_dcp=cfg.train.get('use_dcp', True)
     ).to(device)
     
     # 非对称循环损失
@@ -137,74 +138,55 @@ def main(args) -> None:
                 0, diffusion.num_timesteps, (z_0.shape[0],), device=device
             )
 
-            # 1. 常规扩散损失
+            # 1. Standard diffusion loss
             diffusion_loss = diffusion.p_losses(cldm, z_0, t, cond)
             
-            # 2. 生成雾化图像（用于循环一致性）
-            with torch.no_grad():
-                # 使用训练中的ControlNet生成雾化图像
-                hazy_z = sampler.sample(
-                    model=cldm,
-                    device=device,
-                    steps=20,  # 使用较少步数提高训练效率
-                    x_size=(z_0.shape[0], *z_0.shape[1:]),
-                    cond=cond,
-                    uncond=None,
-                    cfg_scale=1.0,
-                    progress=False,
-                )
-                
-                # 解码为RGB图像
-                hazy_imgs = (pure_cldm.vae_decode(hazy_z) + 1) / 2  # 转换到[0,1]范围
-                
-                # 估计雾气密度 (简单用亮度估计)
-                hazy_gray = 0.299 * hazy_imgs[:, 0:1] + 0.587 * hazy_imgs[:, 1:2] + 0.114 * hazy_imgs[:, 2:3]
-                hazy_density = F.adaptive_avg_pool2d(hazy_gray, 1)  # 全局平均池化
-            
-            # 3. 计算层级循环一致性损失
-            if global_step > cfg.train.get('cycle_start_step', 500):  # 在预热阶段后启用循环损失
-                # 生成新的条件（雾化图像作为输入）
-                dehaze_cond = pure_cldm.prepare_condition(hazy_imgs, prompt)
-                
-                # 将雾化图像送入模型进行去雾
+            # 2. Simple cycle consistency loss without full sampling
+            if global_step > cfg.train.get('cycle_start_step', 500):
+                # Use simple forward pass through network for faster training
                 with torch.no_grad():
-                    dehazed_z = sampler.sample(
-                        model=cldm,
-                        device=device,
-                        steps=20,  # 使用较少步数提高训练效率
-                        x_size=(z_0.shape[0], *z_0.shape[1:]),
-                        cond=dehaze_cond,
-                        uncond=None,
-                        cfg_scale=1.0,
-                        progress=False,
-                    )
+                    # Generate approximate dehazed result using single step
+                    noise = torch.randn_like(z_0)
+                    t_sample = torch.randint(200, 400, (z_0.shape[0],), device=device)  # mid-range timestep
+                    x_t = diffusion.q_sample(z_0, t_sample, noise)
                     
-                    # 解码为RGB图像
-                    dehazed_imgs = (pure_cldm.vae_decode(dehazed_z) + 1) / 2  # 转换到[0,1]范围
+                    # Single denoising step for approximate result
+                    pred_noise = cldm(x_t, t_sample, **cond)
+                    alpha_t = diffusion.sqrt_alphas_cumprod[t_sample].view(-1, 1, 1, 1)
+                    beta_t = diffusion.sqrt_one_minus_alphas_cumprod[t_sample].view(-1, 1, 1, 1)
+                    approx_z = (x_t - beta_t * pred_noise) / alpha_t
+                    
+                    # Decode to get approximate dehazed image
+                    approx_dehazed = (pure_cldm.vae_decode(approx_z) + 1) / 2  # [0,1] range
+                    
+                # Estimate fog density for adaptive weighting
+                gt_norm = (gt + 1) / 2  # Convert to [0,1] range
+                lq_norm = torch.clamp(lq, 0, 1)  # Ensure LQ is in [0,1] range
                 
-                # 计算层级循环一致性损失
-                gt_norm = (gt + 1) / 2  # 转换到[0,1]范围
+                # Compute hierarchical cycle consistency loss
                 cycle_consistency_loss, loss_details = hier_cycle_loss(
                     clean=gt_norm, 
-                    hazy=hazy_imgs, 
-                    dehazed=dehazed_imgs,
-                    hazy_density=hazy_density
+                    hazy=lq_norm, 
+                    dehazed=approx_dehazed
                 )
                 
-                # 计算非对称循环损失
-                asymmetric_loss, _ = asym_cycle_loss(gt_norm, hazy_imgs, dehazed_imgs)
+                # Compute asymmetric cycle loss
+                asymmetric_loss, _ = asym_cycle_loss(gt_norm, lq_norm, approx_dehazed)
                 
-                # 权重递增，在训练过程中逐渐增加循环损失的权重
+                # Progressive weight scheduling
                 cycle_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('cycle_weight', 0.5)
                 asym_weight = min(1.0, global_step / cfg.train.get('cycle_max_step', 2000)) * cfg.train.get('asym_weight', 0.3)
                 
-                # 确保每个损失都是标量
+                # Ensure losses are scalars
                 if not torch.is_tensor(asymmetric_loss) or asymmetric_loss.numel() > 1:
                     asymmetric_loss = asymmetric_loss.mean()
+                if not torch.is_tensor(cycle_consistency_loss) or cycle_consistency_loss.numel() > 1:
+                    cycle_consistency_loss = cycle_consistency_loss.mean()
+                    
                 loss = diffusion_loss + cycle_weight * cycle_consistency_loss + asym_weight * asymmetric_loss
                 
-                # 记录循环损失
-                cycle_loss_log.append(cycle_consistency_loss.mean().item())
+                # Log cycle loss
+                cycle_loss_log.append(cycle_consistency_loss.item())
             else:
                 loss = diffusion_loss
             
@@ -268,21 +250,6 @@ def main(args) -> None:
                         cfg_scale=1.0,
                         progress=accelerator.is_main_process,
                     )
-                    # 生成去雾结果用于展示循环一致性
-                    if global_step > cfg.train.get('cycle_start_step', 500):
-                        hazy_samples = (pure_cldm.vae_decode(z) + 1) / 2  # [0,1]范围
-                        dehaze_cond = pure_cldm.prepare_condition(hazy_samples, log_prompt)
-                        dehazed_z = sampler.sample(
-                            model=cldm,
-                            device=device,
-                            steps=50,
-                            x_size=(len(log_gt), *z_0.shape[1:]),
-                            cond=dehaze_cond,
-                            uncond=None,
-                            cfg_scale=1.0,
-                            progress=accelerator.is_main_process,
-                        )
-                        dehazed_samples = pure_cldm.vae_decode(dehazed_z)
                     
                     if accelerator.is_main_process:
                         for tag, image in [
@@ -299,14 +266,6 @@ def main(args) -> None:
                             ),
                         ]:
                             writer.add_image(tag, make_grid(image, nrow=4), global_step)
-                        
-                        # 如果有循环结果，也记录
-                        if global_step > cfg.train.get('cycle_start_step', 500):
-                            writer.add_image(
-                                "cycle/dehazed", 
-                                make_grid((dehazed_samples + 1) / 2, nrow=4), 
-                                global_step
-                            )
                 cldm.train()
             accelerator.wait_for_everyone()
             if global_step == max_steps:

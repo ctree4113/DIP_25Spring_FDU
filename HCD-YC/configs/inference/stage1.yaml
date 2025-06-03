@@ -53,20 +53,20 @@ model:
       controlnet_cfg:
         target: diffbir.model.controlnet.YCbCrControlNet
         params:
-          use_checkpoint: True
-          image_size: 32 # unused
-          in_channels: 4
-          hint_channels: 4
-          model_channels: 320
-          attention_resolutions: [ 4, 2, 1 ]
-          num_res_blocks: 2
-          channel_mult: [ 1, 2, 4, 4 ]
-          num_head_channels: 64 # need to fix for flash-attn
-          use_spatial_transformer: True
-          use_linear_in_transformer: True
-          transformer_depth: 1
-          context_dim: 1024
-          legacy: False
+        use_checkpoint: True
+        image_size: 32 # unused
+        in_channels: 4
+        hint_channels: 4
+        model_channels: 320
+        attention_resolutions: [ 4, 2, 1 ]
+        num_res_blocks: 2
+        channel_mult: [ 1, 2, 4, 4 ]
+        num_head_channels: 64
+        use_spatial_transformer: True
+        use_linear_in_transformer: True
+        transformer_depth: 1
+        context_dim: 1024
+        legacy: False
           ycbcr_fusion: True
 
   diffusion:
@@ -80,5 +80,5 @@ inference:
   w: 0.85
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
   controlnet_path: 'experiment/stage1_ycbcr_hcycle/checkpoints/0005000.pt'
-  image_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/clear/'
-  result_folder: '/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/Generated_Hazy/'
+  image_folder: 'datasets/clear/'
+  result_folder: 'datasets/Generated_Hazy/'

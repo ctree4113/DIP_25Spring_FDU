@@ -80,8 +80,8 @@ dataset:
   train:
     target: datasets.HybridTrainingData
     params:
-      syn_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/RIDCP/"
-      real_folder: "/home/sjtu/workspace_yi/DIP_25Spring_FDU/HCD-YC/datasets/URHI/"
+      syn_folder: "datasets/RIDCP/"
+      real_folder: "datasets/URHI/"
       crop_size: 256
       p: 0.3
 
@@ -92,27 +92,28 @@ train:
   # experiment directory path
   exp_dir: './experiment/stage1_ycbcr_hcycle/'
   learning_rate: 5e-5
-  batch_size: 32
-  num_workers: 16
+  batch_size: 64
+  num_workers: 24
   train_steps: 5000
   log_every: 100
   ckpt_every: 1000
   image_every: 1000
   resume: ~
   
-  # 层级循环一致性设置
-  cycle_start_step: 500  # 开始应用循环一致性损失的步数
-  cycle_max_step: 2000   # 循环损失权重达到最大值的步数
-  cycle_weight: 0.5      # 层级循环一致性损失的权重
-  asym_weight: 0.3       # 非对称循环损失的权重
+  # hierarchical cycle consistency settings
+  cycle_start_step: 500  # start applying cycle consistency loss
+  cycle_max_step: 2000   # cycle loss weight reaches maximum
+  cycle_weight: 0.5      # hierarchical cycle consistency loss weight
+  asym_weight: 0.3       # asymmetric cycle loss weight
   
-  # 层级损失权重
-  pixel_weight: 1.0      # 像素级损失权重
-  feature_weight: 1.0    # 特征级损失权重
-  semantic_weight: 0.5   # 语义级损失权重
-  region_aware: True     # 是否使用区域感知循环一致性
-  adaptive_weight: True  # 是否使用自适应权重
+  # hierarchical loss weights
+  pixel_weight: 1.0      # pixel level loss weight
+  feature_weight: 1.0    # feature level loss weight
+  semantic_weight: 0.5   # semantic level loss weight
+  region_weight: 0.2     # region-aware loss weight
+  adaptive_weight: True  # whether to use adaptive weights
+  use_dcp: True          # whether to use dark channel prior
   
-  # 循环一致性方向权重
-  forward_weight: 0.7    # 前向循环权重(清晰->雾气->清晰)
-  backward_weight: 0.3   # 反向循环权重(雾气->清晰->雾气)
+  # cycle consistency direction weights
+  forward_weight: 0.7    # forward cycle weight (clear->hazy->clear)
+  backward_weight: 0.3   # backward cycle weight (hazy->clear->hazy)

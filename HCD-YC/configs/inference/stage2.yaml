@@ -78,11 +78,30 @@ model:
 
 
 inference:
+  # Model paths
   sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
-  controlnet_path: 'experiment/stage2_ycbcr_hcycle/checkpoints/0040000.pt'
-  image_folder: 'inputs/'
-  result_folder: 'outputs/'
+  controlnet_path: 'experiment/stage2_hcdyc_stable/checkpoints/0020000.pt'
   
-  # 文本引导设置
-  use_dynamic_prompt: True  # 是否使用动态文本提示
-  use_text_processor: True  # 是否使用文本条件优化处理 
+  # Data paths
+  image_folder: "inputs"
+  result_folder: "outputs"
+  
+  # Enhanced text guidance settings
+  use_dynamic_prompt: True      # enable intelligent prompt selection
+  use_text_processor: True      # enable text condition enhancement
+  verbose: False                # print selected prompts for each image
+  
+  # Default prompts if dynamic selection is disabled
+  default_prompts: 
+    - "remove dense fog"
+    - "clear up atmospheric haze"
+    
+  # Adaptive sampling settings
+  steps: 50                     # base sampling steps
+  adaptive_steps: True          # adjust steps based on image complexity
+  
+  # Quality vs speed trade-offs
+  cfg_scale: 1.0               # classifier-free guidance scale
+  
+  # Batch processing (if multiple images)
+  batch_size: 1                # process one image at a time for memory efficiency 

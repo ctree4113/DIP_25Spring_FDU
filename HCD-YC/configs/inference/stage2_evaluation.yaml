@@ -1,0 +1,165 @@
+model:
+  cldm:
+    target: diffbir.model.cldm.ControlLDM
+    params:
+      latent_scale_factor: 0.18215
+      unet_cfg:
+        use_checkpoint: True
+        image_size: 32 # unused
+        in_channels: 4
+        out_channels: 4
+        model_channels: 320
+        attention_resolutions: [ 4, 2, 1 ]
+        num_res_blocks: 2
+        channel_mult: [ 1, 2, 4, 4 ]
+        num_head_channels: 64 # need to fix for flash-attn
+        use_spatial_transformer: True
+        use_linear_in_transformer: True
+        transformer_depth: 1
+        context_dim: 1024
+        legacy: False
+      vae_cfg:
+        embed_dim: 4
+        ddconfig:
+          double_z: true
+          z_channels: 4
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+      clip_cfg:
+        embed_dim: 1024
+        vision_cfg:
+          image_size: 224
+          layers: 32
+          width: 1280
+          head_width: 80
+          patch_size: 14
+        text_cfg:
+          context_length: 77
+          vocab_size: 49408
+          width: 1024
+          heads: 16
+          layers: 24
+        layer: "penultimate"
+      controlnet_cfg:
+        target: diffbir.model.controlnet.YCbCrControlNet  # Enhanced YCbCr ControlNet
+        params:
+          use_checkpoint: True
+          image_size: 32 # unused
+          in_channels: 4
+          hint_channels: 4
+          model_channels: 320
+          attention_resolutions: [ 4, 2, 1 ]
+          num_res_blocks: 2
+          channel_mult: [ 1, 2, 4, 4 ]
+          num_head_channels: 64 # need to fix for flash-attn
+          use_spatial_transformer: True
+          use_linear_in_transformer: True
+          transformer_depth: 1
+          context_dim: 1024
+          legacy: False
+          ycbcr_fusion: True  # Enable YCbCr fusion functionality
+
+  diffusion:
+    target: diffbir.model.gaussian_diffusion.Diffusion  # Enhanced diffusion model
+    params:
+      linear_start: 0.00085
+      linear_end: 0.0120
+      timesteps: 1000
+
+guidance:
+  target: diffbir.utils.cond_fn.WeightedSSIMGuidance
+  params:
+    # Reduced guidance strength for better memory usage and stability
+    scale: 0.08
+    t_start: 601
+    t_stop: -1
+    space: "rgb"
+    repeat: 1
+
+# ISR-AlignOp Configuration
+isr_alignop:
+  # ISR mode selection: basic, adaptive, multi_scale
+  mode: "adaptive"  # Recommended: adaptive mode for best balance
+  
+  # Enable verbose logging for debugging (set to false for production)
+  verbose: false
+  
+  # Basic ISR Configuration
+  # - Uses single-scale two-step iterative refinement
+  # - Best for: Simple scenes with uniform haze density
+  basic:
+    kernel_size: 39      # Slightly larger patch for better statistics
+    stride: 12           # Balanced stride for efficiency vs quality
+    low_memory: true     # Enable for 24GB GPU
+    eps: 1e-6           # Numerical stability
+    
+  # Adaptive ISR Configuration (Recommended)
+  # - Automatically switches between ISR and standard AlignOp based on image quality
+  # - Best for: Mixed scenes with varying haze conditions
+  adaptive:
+    kernel_size: 41      # Larger patch for robust adaptive decisions
+    stride: 10           # Finer stride for better coverage
+    quality_threshold: 0.12  # Optimized threshold: higher values = more frequent ISR usage
+    low_memory: true     # Essential for large images
+    eps: 1e-6
+    
+  # Multi-scale ISR Configuration  
+  # - Processes multiple patch scales and fuses results
+  # - Best for: Complex scenes requiring fine detail preservation
+  multi_scale:
+    scales: [43, 31, 19]  # Three scales: coarse to fine
+    stride: 8            # Smaller stride for dense sampling
+    low_memory: true
+    eps: 1e-6
+    
+  # ISR Timing Configuration
+  # Controls when to collect early predictions during diffusion process
+  timing:
+    tau_a_ratio: 0.25    # Collect very early prediction A at 25% of τ (more noisy, but captures global structure)
+    tau_b_ratio: 0.75    # Collect later prediction B at 75% of τ (clearer, better for refinement)
+
+# Memory Optimization Settings
+memory_optimization:
+  # GPU memory management
+  enable_memory_efficient_attention: true
+  gradient_checkpointing: true
+  mixed_precision: false  # Disable for better numerical stability
+  
+  # Patch processing optimization
+  max_patch_memory: 150000000  # ~150M elements threshold
+  enable_tiled_processing: true
+  
+  # Cache management
+  clear_cache_frequency: 5  # Clear cache every 5 steps
+
+inference:
+  # Sampling parameters (proportions of total 1000 steps)
+  tau: 0.7
+  omega: 0.5
+  
+  # Model paths
+  sd_path: 'weights/v2-1_512-ema-pruned.ckpt'
+  controlnet_path: 'experiment/stage2_hcdyc_stable/checkpoints/0018000.pt'
+  
+  # I/O paths for evaluation
+  image_folder: 'datasets/RTTS/JPEGImages'
+  result_folder: 'evaluation_outputs/hcd_yc_isr_evaluation'
+  
+  # Processing settings
+  num_inference_steps: 80   # Balanced steps for quality vs speed
+  cfg_scale: 1.0           # No classifier-free guidance for stability
+  
+  # Image processing - optimized settings for evaluation
+  max_image_size: 1024     # Maximum dimension for processing (restored to original)
+  resize_shorter_edge: 384 # Minimum size for small images
+  padding_multiple: 64     # Padding for model compatibility 
